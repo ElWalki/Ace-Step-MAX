@@ -2431,47 +2431,110 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   </div>
                 )}
 
-                {/* Vocal → Generate flow: one-click setup */}
+                {/* Vocal → Generate workflow options */}
                 {audioTab === 'vocal' && vocalAudioUrl && (
                   <div className="space-y-2">
-                    {/* Status: vocal armed for generation */}
-                    {sourceAudioUrl === vocalAudioUrl && taskType === 'cover' ? (
+                    {/* Active vocal config status */}
+                    {(sourceAudioUrl === vocalAudioUrl || referenceAudioUrl === vocalAudioUrl) && (
                       <div className="flex items-center gap-2 p-2 rounded-lg bg-violet-100 dark:bg-violet-900/30 border border-violet-300 dark:border-violet-700/50">
                         <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
                         <span className="text-[11px] font-medium text-violet-800 dark:text-violet-200">
-                          Vocal armed — Hit Generate to create a new song with this voice
+                          {sourceAudioUrl === vocalAudioUrl && referenceAudioUrl === vocalAudioUrl
+                            ? 'Vocal set as Source + Reference'
+                            : sourceAudioUrl === vocalAudioUrl
+                            ? 'Vocal set as Source (Cover mode)'
+                            : 'Vocal set as Reference (Style mode)'}
+                          {instrumentalAudioUrl && sourceAudioUrl === instrumentalAudioUrl && ' + Instrumental as Source'}
+                          {' — Ready to Generate'}
                         </span>
                         <button
                           type="button"
                           onClick={() => {
-                            setSourceAudioUrl('');
-                            setSourceAudioTitle('');
-                            setTaskType('text2music');
+                            if (sourceAudioUrl === vocalAudioUrl || sourceAudioUrl === instrumentalAudioUrl) {
+                              setSourceAudioUrl('');
+                              setSourceAudioTitle('');
+                            }
+                            if (referenceAudioUrl === vocalAudioUrl) {
+                              setReferenceAudioUrl('');
+                              setReferenceAudioTitle('');
+                            }
+                            if (taskType === 'cover') setTaskType('text2music');
                           }}
                           className="ml-auto text-[10px] font-medium text-violet-500 hover:text-violet-700 dark:hover:text-violet-300"
                         >
-                          Remove
+                          Clear
                         </button>
                       </div>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSourceAudioUrl(vocalAudioUrl);
-                          setSourceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Voice)`);
-                          setSourceTime(0);
-                          setSourceDuration(0);
-                          setTaskType('cover');
-                        }}
-                        className="w-full flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white px-4 py-2.5 text-xs font-bold transition-all shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40"
-                      >
-                        <Mic size={14} />
-                        Use This Vocal for Generation
-                      </button>
                     )}
-                    <p className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-relaxed">
-                      Sets this vocal as the source audio in Cover mode. ACE-Step will generate a new instrumental that matches the voice melody and timing. Adjust Cover Strength in the Source tab to control how closely it follows the vocal.
-                    </p>
+
+                    {/* Workflow buttons */}
+                    {sourceAudioUrl !== vocalAudioUrl && referenceAudioUrl !== vocalAudioUrl && (
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">How to use this vocal</label>
+
+                        {/* Option A: Vocal as Source (Cover mode) */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSourceAudioUrl(vocalAudioUrl);
+                            setSourceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Voice)`);
+                            setSourceTime(0);
+                            setSourceDuration(0);
+                            setTaskType('cover');
+                          }}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/15 hover:bg-violet-100 dark:hover:bg-violet-900/25 border border-violet-200 dark:border-violet-800/30 px-3 py-2.5 text-left transition-colors group"
+                        >
+                          <Mic size={14} className="text-violet-500 mt-0.5 shrink-0" />
+                          <div>
+                            <div className="text-[11px] font-bold text-violet-700 dark:text-violet-300 group-hover:text-violet-800 dark:group-hover:text-violet-200">Generate following this voice</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">New song that follows the vocal melody and rhythm. Best for making the AI sing like the loaded voice.</div>
+                          </div>
+                        </button>
+
+                        {/* Option B: Vocal as Reference (style transfer) */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReferenceAudioUrl(vocalAudioUrl);
+                            setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
+                            setReferenceTime(0);
+                            setReferenceDuration(0);
+                          }}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-pink-50 dark:bg-pink-900/15 hover:bg-pink-100 dark:hover:bg-pink-900/25 border border-pink-200 dark:border-pink-800/30 px-3 py-2.5 text-left transition-colors group"
+                        >
+                          <Music2 size={14} className="text-pink-500 mt-0.5 shrink-0" />
+                          <div>
+                            <div className="text-[11px] font-bold text-pink-700 dark:text-pink-300 group-hover:text-pink-800 dark:group-hover:text-pink-200">Use vocal style as reference</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">New song inspired by the vocal timbre and feel. The AI generates freely but captures the voice character.</div>
+                          </div>
+                        </button>
+
+                        {/* Option C: Full cover — instrumental as Source + vocal as Reference */}
+                        {instrumentalAudioUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSourceAudioUrl(instrumentalAudioUrl);
+                              setSourceAudioTitle(`${vocalAudioTitle?.replace(' (Vocal)', '') || 'Track'} (Instrumental)`);
+                              setSourceTime(0);
+                              setSourceDuration(0);
+                              setReferenceAudioUrl(vocalAudioUrl);
+                              setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
+                              setReferenceTime(0);
+                              setReferenceDuration(0);
+                              setTaskType('cover');
+                            }}
+                            className="w-full flex items-start gap-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 border border-emerald-200 dark:border-emerald-800/30 px-3 py-2.5 text-left transition-colors group"
+                          >
+                            <Sparkles size={14} className="text-emerald-500 mt-0.5 shrink-0" />
+                            <div>
+                              <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 group-hover:text-emerald-800 dark:group-hover:text-emerald-200">Full cover: instrumental + vocal style</div>
+                              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Regenerate the instrumental as source with the vocal style as reference. Best for creating a new version of the song.</div>
+                            </div>
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
