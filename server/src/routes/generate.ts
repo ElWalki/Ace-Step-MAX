@@ -430,6 +430,16 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
       try {
         const aceStatus = await getJobStatus(job.acestep_task_id);
 
+        // Stale job: in-memory job was lost (server restart). Auto-mark as failed in DB.
+        if (aceStatus.status === 'failed' && aceStatus.error === 'Job not found') {
+          await pool.query(
+            `UPDATE generation_jobs SET status = 'failed', error = 'Server restarted — job lost', updated_at = datetime('now') WHERE id = ? AND status IN ('pending','queued','running')`,
+            [req.params.jobId]
+          );
+          res.json({ status: 'failed', error: 'Server restarted — job lost' });
+          return;
+        }
+
         if (aceStatus.status !== job.status) {
           // Use optimistic lock: only update if status hasn't changed (prevents duplicate song creation)
           let updateQuery = `UPDATE generation_jobs SET status = ?, updated_at = datetime('now')`;

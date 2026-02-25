@@ -763,11 +763,21 @@ function AppContent() {
           }
         } else if (status.status === 'failed') {
           cleanupJob(jobId, tempId);
-          console.error(`Job ${jobId} failed:`, status.error);
-          showToast(`${t('generationFailed')}: ${status.error || 'Unknown error'}`, 'error');
+          // Suppress toast for stale jobs from previous server sessions
+          const isStaleJob = (status.error || '').includes('Job not found') || (status.error || '').includes('Server reinitialized') || (status.error || '').includes('Cancelled');
+          if (!isStaleJob) {
+            console.error(`Job ${jobId} failed:`, status.error);
+            showToast(`${t('generationFailed')}: ${status.error || 'Unknown error'}`, 'error');
+          }
         }
-      } catch (pollError) {
-        console.error(`Polling error for job ${jobId}:`, pollError);
+      } catch (pollError: any) {
+        // Silently clean up stale jobs (e.g. server restarted, job no longer in memory)
+        const msg = pollError?.message || String(pollError);
+        if (msg.includes('Job not found') || msg.includes('404')) {
+          console.log(`Job ${jobId} no longer exists (stale), cleaning up`);
+        } else {
+          console.error(`Polling error for job ${jobId}:`, pollError);
+        }
         cleanupJob(jobId, tempId);
       }
     }, 2000);
