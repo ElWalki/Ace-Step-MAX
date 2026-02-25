@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic, FileText, Guitar, AlertTriangle, X } from 'lucide-react';
+import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic, FileText, Guitar, AlertTriangle, X, Save, User } from 'lucide-react';
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
-import { generateApi, trainingApi } from '../services/api';
+import { generateApi, trainingApi, voicesApi } from '../services/api';
 import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
 import { SongLyricsModal } from './SongLyricsModal';
@@ -363,6 +363,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [showLyricsModal, setShowLyricsModal] = useState(false);
   const [showCoverSongModal, setShowCoverSongModal] = useState(false);
 
+  // Voice presets
+  const [voicePresets, setVoicePresets] = useState<Array<{
+    id: string; name: string; audio_url: string; thumbnail_url: string | null; duration: number | null; created_at: string;
+  }>>([]);
+  const [showVoicePresets, setShowVoicePresets] = useState(false);
+  const [isSavingVoicePreset, setIsSavingVoicePreset] = useState(false);
+  const [showSaveVoiceInput, setShowSaveVoiceInput] = useState(false);
+  const [voicePresetName, setVoicePresetName] = useState('');
+  const [presetWaveforms, setPresetWaveforms] = useState<Record<string, number[]>>({});
+
   // Reference tracks modal state
   const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
   const [isLoadingTracks, setIsLoadingTracks] = useState(false);
@@ -593,6 +603,101 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     };
     void syncLoraState();
   }, [token]);
+
+  // Voice presets — load on mount
+  useEffect(() => {
+    if (!token) return;
+    voicesApi.list(token).then(setVoicePresets).catch(err => console.error('Failed to load voice presets:', err));
+  }, [token]);
+
+  const fetchVoicePresets = useCallback(async () => {
+    if (!token) return;
+    try {
+      const presets = await voicesApi.list(token);
+      setVoicePresets(presets);
+    } catch (err) {
+      console.error('Failed to fetch voice presets:', err);
+    }
+  }, [token]);
+
+  const saveVoicePreset = async () => {
+    if (!token || !vocalAudioUrl || !voicePresetName.trim()) return;
+    setIsSavingVoicePreset(true);
+    try {
+      const preset = await voicesApi.create(voicePresetName.trim(), vocalAudioUrl, vocalDuration || undefined, token);
+      setVoicePresets(prev => [preset, ...prev]);
+      setShowSaveVoiceInput(false);
+      setVoicePresetName('');
+      // Generate waveform for the new preset
+      generateWaveformForUrl(preset.audio_url, preset.id);
+    } catch (err) {
+      console.error('Failed to save voice preset:', err);
+    } finally {
+      setIsSavingVoicePreset(false);
+    }
+  };
+
+  const deleteVoicePreset = async (id: string) => {
+    if (!token) return;
+    try {
+      await voicesApi.delete(id, token);
+      setVoicePresets(prev => prev.filter(p => p.id !== id));
+      setPresetWaveforms(prev => { const next = { ...prev }; delete next[id]; return next; });
+    } catch (err) {
+      console.error('Failed to delete voice preset:', err);
+    }
+  };
+
+  const loadVoicePreset = (preset: { name: string; audio_url: string; duration: number | null }) => {
+    setVocalAudioUrl(preset.audio_url);
+    setVocalAudioTitle(preset.name);
+    setVocalTime(0);
+    setVocalDuration(preset.duration || 0);
+    setShowVoicePresets(false);
+  };
+
+  // Waveform generation from audio URL using offline decoding
+  const generateWaveformForUrl = useCallback((url: string, presetId: string) => {
+    const NUM_BARS = 24;
+    fetch(url)
+      .then(res => res.arrayBuffer())
+      .then(arrayBuffer => {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        return ctx.decodeAudioData(arrayBuffer).then(audioBuffer => {
+          const channelData = audioBuffer.getChannelData(0);
+          const blockSize = Math.floor(channelData.length / NUM_BARS);
+          const bars: number[] = [];
+          for (let i = 0; i < NUM_BARS; i++) {
+            let sum = 0;
+            const start = i * blockSize;
+            for (let j = 0; j < blockSize; j++) {
+              sum += Math.abs(channelData[start + j]);
+            }
+            bars.push(sum / blockSize);
+          }
+          // Normalize to 0-1
+          const max = Math.max(...bars, 0.001);
+          const normalized = bars.map(v => v / max);
+          setPresetWaveforms(prev => ({ ...prev, [presetId]: normalized }));
+          ctx.close();
+        });
+      })
+      .catch(() => {
+        // Fallback: seeded pseudo-random waveform based on presetId hash
+        const seed = presetId.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+        const fallback = Array.from({ length: NUM_BARS }, (_, i) => 0.2 + (Math.sin(seed + i * 1.7) * 0.5 + 0.5) * 0.6);
+        setPresetWaveforms(prev => ({ ...prev, [presetId]: fallback }));
+      });
+  }, []);
+
+  // Generate waveforms for loaded presets
+  useEffect(() => {
+    voicePresets.forEach(preset => {
+      if (!presetWaveforms[preset.id]) {
+        generateWaveformForUrl(preset.audio_url, preset.id);
+      }
+    });
+  }, [voicePresets, presetWaveforms, generateWaveformForUrl]);
 
   // LoRA API handlers
   const handleLoraToggle = async () => {
@@ -1392,6 +1497,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       setReferenceTime(0);
       setReferenceDuration(0);
       setTaskType('cover');
+      // Auto-adjust duration to match vocal length
+      if (vocalDuration > 0) {
+        const rounded = Math.ceil(vocalDuration);
+        setDuration(Math.min(240, Math.max(5, rounded)));
+      }
       setShowCoverSongModal(false);
       setShowAudioModal(false);
       setPlayingTrackId(null);
@@ -2427,6 +2537,17 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     </div>
                     <button
                       type="button"
+                      onClick={() => {
+                        setShowSaveVoiceInput(true);
+                        setVoicePresetName(vocalAudioTitle || 'Voice');
+                      }}
+                      className="p-1.5 rounded-full hover:bg-violet-100 dark:hover:bg-violet-900/30 text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+                      title="Save as Voice Preset"
+                    >
+                      <Save size={14} />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => onPrepareTraining?.({
                         id: `vocal_${Date.now()}`,
                         title: vocalAudioTitle || 'Vocal',
@@ -2450,6 +2571,37 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       className="p-1.5 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-400 hover:text-zinc-600 dark:hover:text-white transition-colors"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                )}
+
+                {/* Save Voice Preset inline input */}
+                {audioTab === 'vocal' && showSaveVoiceInput && vocalAudioUrl && (
+                  <div className="flex items-center gap-2 p-2 rounded-lg bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800/30">
+                    <User size={14} className="text-violet-500 shrink-0" />
+                    <input
+                      autoFocus
+                      value={voicePresetName}
+                      onChange={(e) => setVoicePresetName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && voicePresetName.trim()) saveVoicePreset();
+                        if (e.key === 'Escape') { setShowSaveVoiceInput(false); setVoicePresetName(''); }
+                      }}
+                      placeholder="Voice preset name..."
+                      className="flex-1 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-violet-500"
+                    />
+                    <button
+                      onClick={saveVoicePreset}
+                      disabled={!voicePresetName.trim() || isSavingVoicePreset}
+                      className="px-2.5 py-1 bg-violet-500 text-white rounded-md text-[10px] font-semibold hover:bg-violet-600 transition-colors disabled:opacity-50"
+                    >
+                      {isSavingVoicePreset ? <Loader2 size={12} className="animate-spin" /> : 'Save'}
+                    </button>
+                    <button
+                      onClick={() => { setShowSaveVoiceInput(false); setVoicePresetName(''); }}
+                      className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                    >
+                      <X size={12} />
                     </button>
                   </div>
                 )}
@@ -2507,6 +2659,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             setSourceTime(0);
                             setSourceDuration(0);
                             setTaskType('cover');
+                            // Auto-adjust duration to match vocal length
+                            if (vocalDuration > 0) {
+                              const rounded = Math.ceil(vocalDuration);
+                              setDuration(Math.min(240, Math.max(5, rounded)));
+                            }
                           }}
                           disabled={loraLoaded}
                           className="w-full flex items-start gap-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/15 hover:bg-violet-100 dark:hover:bg-violet-900/25 border border-violet-200 dark:border-violet-800/30 px-3 py-2.5 text-left transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2717,28 +2874,109 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
                 {/* Action buttons — Vocal tab */}
                 {audioTab === 'vocal' && !isSeparating && (
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAudioModalTarget('reference');
-                        setShowAudioModal(true);
-                      }}
-                      disabled={isSeparating}
-                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
-                    >
-                      <Music2 size={14} />
-                      Separate from Library
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => vocalInputRef.current?.click()}
-                      disabled={isSeparating}
-                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
-                    >
-                      <Upload size={14} />
-                      Upload Acapella
-                    </button>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAudioModalTarget('reference');
+                          setShowAudioModal(true);
+                        }}
+                        disabled={isSeparating}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
+                      >
+                        <Music2 size={14} />
+                        Separate from Library
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => vocalInputRef.current?.click()}
+                        disabled={isSeparating}
+                        className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
+                      >
+                        <Upload size={14} />
+                        Upload Acapella
+                      </button>
+                    </div>
+
+                    {/* Load Voice Preset button + dropdown */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => { setShowVoicePresets(!showVoicePresets); fetchVoicePresets(); }}
+                        className="w-full flex items-center justify-center gap-1.5 rounded-lg bg-zinc-100 dark:bg-white/5 hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-300 px-3 py-2 text-xs font-medium transition-colors border border-zinc-200 dark:border-white/5"
+                      >
+                        <User size={14} />
+                        Voice Presets
+                        {voicePresets.length > 0 && (
+                          <span className="ml-1 px-1.5 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-400 rounded-full text-[9px] font-bold">
+                            {voicePresets.length}
+                          </span>
+                        )}
+                        <ChevronDown size={12} className={`ml-auto transition-transform ${showVoicePresets ? 'rotate-180' : ''}`} />
+                      </button>
+
+                      {/* Voice Presets Dropdown */}
+                      {showVoicePresets && (
+                        <div className="mt-1 rounded-lg bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 shadow-xl overflow-hidden z-20 relative">
+                          {voicePresets.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center py-6 px-4 text-center">
+                              <User size={28} className="text-zinc-300 dark:text-zinc-600 mb-2" />
+                              <p className="text-xs text-zinc-400 dark:text-zinc-500">No voice presets yet</p>
+                              <p className="text-[10px] text-zinc-300 dark:text-zinc-600 mt-1">Load a vocal and click <Save size={10} className="inline" /> to save it</p>
+                            </div>
+                          ) : (
+                            <div className="max-h-52 overflow-y-auto">
+                              {voicePresets.map(preset => {
+                                const waveform = presetWaveforms[preset.id] || [];
+                                return (
+                                  <div
+                                    key={preset.id}
+                                    className="flex items-center gap-2.5 px-3 py-2 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer group transition-colors border-b border-zinc-100 dark:border-zinc-800 last:border-0"
+                                    onClick={() => loadVoicePreset(preset)}
+                                  >
+                                    {/* Waveform thumbnail */}
+                                    <div className="w-10 h-8 flex items-end gap-px shrink-0 rounded bg-violet-50 dark:bg-violet-900/20 p-0.5 overflow-hidden">
+                                      {waveform.length > 0 ? (
+                                        waveform.map((v, i) => (
+                                          <div
+                                            key={i}
+                                            className="flex-1 bg-violet-400 dark:bg-violet-500 rounded-t-sm"
+                                            style={{ height: `${Math.max(8, v * 100)}%` }}
+                                          />
+                                        ))
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <Mic size={12} className="text-violet-400" />
+                                        </div>
+                                      )}
+                                    </div>
+                                    {/* Info */}
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">
+                                        {preset.name}
+                                      </div>
+                                      <div className="text-[10px] text-zinc-400 dark:text-zinc-500">
+                                        {preset.duration ? formatTime(preset.duration) : '—'}
+                                      </div>
+                                    </div>
+                                    {/* Delete */}
+                                    <button
+                                      type="button"
+                                      onClick={(e) => { e.stopPropagation(); deleteVoicePreset(preset.id); }}
+                                      className="p-1 rounded-full opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-900/30 text-zinc-400 hover:text-red-500 transition-all"
+                                      title="Delete preset"
+                                    >
+                                      <Trash2 size={12} />
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
