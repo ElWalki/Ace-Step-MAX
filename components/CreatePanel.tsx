@@ -2680,7 +2680,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             : referenceAudioUrl === vocalAudioUrl && !sourceAudioUrl
                             ? '✨ Voice Style Reference active'
                             : sourceAudioUrl === instrumentalAudioUrl && referenceAudioUrl === vocalAudioUrl
-                            ? '🎹 Cover Song mode active'
+                            ? '🎙️ Sing over Instrumental active'
                             : sourceAudioUrl && referenceAudioUrl === vocalAudioUrl
                             ? '🎸 Cover with Voice active'
                             : 'Vocal configured'}
@@ -2816,6 +2816,52 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Generate freely but capture the voice timbre and feel.</div>
                           </div>
                         </button>
+
+                        {/* Option 6: Sing over Instrumental — only when instrumental is also available */}
+                        {instrumentalAudioUrl && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Vocal → Reference (voice timbre), Instrumental → Source (backing track)
+                              setReferenceAudioUrl(vocalAudioUrl);
+                              setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Voice)`);
+                              setReferenceTime(0);
+                              setReferenceDuration(0);
+                              setSourceAudioUrl(instrumentalAudioUrl);
+                              setSourceAudioTitle(`${vocalAudioTitle || 'Track'} (Instrumental)`);
+                              setSourceTime(0);
+                              setSourceDuration(0);
+                              setTaskType('cover');
+                              // Auto-adjust duration to match vocal length
+                              if (vocalDuration > 0) {
+                                const rounded = Math.ceil(vocalDuration);
+                                setDuration(Math.min(240, Math.max(5, rounded)));
+                              }
+                              // Focus lyrics textarea so user writes/checks lyrics
+                              setTimeout(() => {
+                                const lyricsTextarea = document.querySelector('textarea[placeholder*="lyrics"]') as HTMLTextAreaElement;
+                                if (lyricsTextarea) {
+                                  lyricsTextarea.focus();
+                                  lyricsTextarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }
+                              }, 100);
+                            }}
+                            disabled={loraLoaded}
+                            className="w-full flex items-start gap-2.5 rounded-lg bg-cyan-50 dark:bg-cyan-900/15 hover:bg-cyan-100 dark:hover:bg-cyan-900/25 border border-cyan-200 dark:border-cyan-800/30 px-3 py-2.5 text-left transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <Music2 size={14} className="text-cyan-500 mt-0.5 shrink-0" />
+                            <div className="flex-1">
+                              <div className="text-[11px] font-bold text-cyan-700 dark:text-cyan-300 group-hover:text-cyan-800 dark:group-hover:text-cyan-200 flex items-center gap-1.5">
+                                🎙️ Sing over Instrumental
+                                {loraLoaded && <AlertTriangle size={10} className="text-orange-500" />}
+                              </div>
+                              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+                                Use this voice to sing your lyrics over the separated instrumental.
+                                {loraLoaded && <span className="text-orange-500 font-medium"> ⚠️ Unload LoRAs first.</span>}
+                              </div>
+                            </div>
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>

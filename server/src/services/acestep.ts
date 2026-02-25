@@ -411,6 +411,38 @@ export function resetClient(): void {
 }
 
 /**
+ * Full server reinitialize — emergency reset.
+ * Cancels all jobs, clears queue, resets Gradio client, purges VRAM.
+ */
+export function reinitializeServer(): { cancelledJobs: number; message: string } {
+  let cancelledCount = 0;
+
+  // Cancel all active/queued jobs
+  for (const [jobId, job] of activeJobs) {
+    if (job.status === 'queued' || job.status === 'running') {
+      job.cancelled = true;
+      job.status = 'failed';
+      job.error = 'Server reinitialized';
+      job.stage = 'Cancelled — server reset';
+      cancelledCount++;
+    }
+  }
+
+  // Clear the job queue
+  jobQueue.length = 0;
+  isProcessingQueue = false;
+
+  // Reset Gradio client (forces fresh reconnection)
+  resetGradioClient();
+
+  // Purge VRAM
+  autoPurgeVram();
+
+  console.log(`[Reinitialize] Server reset: ${cancelledCount} jobs cancelled, Gradio client reset, VRAM purge triggered`);
+  return { cancelledJobs: cancelledCount, message: 'Server reinitialized successfully' };
+}
+
+/**
  * Cancel a running or queued generation job.
  * For running jobs: resets the Gradio client (force-interrupts predict) + purges VRAM.
  * For queued jobs: removes from queue immediately.

@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, User as UserIcon, Palette, Info, Edit3, ExternalLink, Globe, ChevronDown, Github } from 'lucide-react';
+import { X, User as UserIcon, Palette, Info, Edit3, ExternalLink, Globe, ChevronDown, Github, RotateCcw, Loader2, AlertTriangle, Cpu } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { EditProfileModal } from './EditProfileModal';
+import { generateApi, vramApi } from '../services/api';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -13,11 +14,46 @@ interface SettingsModalProps {
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, theme, onToggleTheme, onNavigateToProfile }) => {
-    const { user } = useAuth();
+    const { user, token } = useAuth();
     const { t, language, setLanguage } = useI18n();
     const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
     const [showLangInfo, setShowLangInfo] = useState(false);
     const langInfoRef = useRef<HTMLDivElement>(null);
+    const [isReinitializing, setIsReinitializing] = useState(false);
+    const [reinitResult, setReinitResult] = useState<string | null>(null);
+    const [isPurging, setIsPurging] = useState(false);
+    const [purgeResult, setPurgeResult] = useState<string | null>(null);
+
+    const handleReinitialize = async () => {
+        if (!token || isReinitializing) return;
+        setIsReinitializing(true);
+        setReinitResult(null);
+        try {
+            const result = await generateApi.reinitialize(token);
+            setReinitResult(`✅ ${result.message}${result.cancelledJobs > 0 ? ` (${result.cancelledJobs} jobs cancelled)` : ''}`);
+        } catch (err) {
+            setReinitResult('❌ Failed to reinitialize server');
+        } finally {
+            setIsReinitializing(false);
+            setTimeout(() => setReinitResult(null), 5000);
+        }
+    };
+
+    const handlePurgeVram = async () => {
+        if (isPurging) return;
+        setIsPurging(true);
+        setPurgeResult(null);
+        try {
+            const result = await vramApi.purge();
+            const freed = result.nvidia_freed_mb || 0;
+            setPurgeResult(freed > 0 ? `✅ Freed ${freed} MB VRAM` : '✅ Cache cleared');
+        } catch (err) {
+            setPurgeResult('❌ Failed to purge VRAM');
+        } finally {
+            setIsPurging(false);
+            setTimeout(() => setPurgeResult(null), 5000);
+        }
+    };
 
     useEffect(() => {
         if (!showLangInfo) return;
@@ -206,6 +242,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                     {t('dark')}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+
+                    {/* Server Management Section */}
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-zinc-900 dark:text-white">
+                            <Cpu size={20} />
+                            <h3 className="font-semibold">Server Management</h3>
+                        </div>
+                        <div className="pl-7 space-y-3">
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                Emergency tools for when the server becomes unresponsive or VRAM fills up.
+                            </p>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={handleReinitialize}
+                                    disabled={isReinitializing}
+                                    className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg border-2 border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 font-medium transition-colors hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+                                >
+                                    {isReinitializing ? <Loader2 size={16} className="animate-spin" /> : <RotateCcw size={16} />}
+                                    {isReinitializing ? 'Reinitializing...' : 'Reinitialize Server'}
+                                </button>
+                                <button
+                                    onClick={handlePurgeVram}
+                                    disabled={isPurging}
+                                    className="flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg border-2 border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 font-medium transition-colors hover:bg-amber-100 dark:hover:bg-amber-900/40 disabled:opacity-50"
+                                >
+                                    {isPurging ? <Loader2 size={16} className="animate-spin" /> : <AlertTriangle size={16} />}
+                                    {isPurging ? 'Purging...' : 'Purge VRAM'}
+                                </button>
+                            </div>
+                            {reinitResult && (
+                                <p className={`text-xs font-medium ${reinitResult.startsWith('✅') ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                    {reinitResult}
+                                </p>
+                            )}
+                            {purgeResult && (
+                                <p className={`text-xs font-medium ${purgeResult.startsWith('✅') ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                    {purgeResult}
+                                </p>
+                            )}
+                            <p className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-relaxed">
+                                <strong>Reinitialize</strong> cancels all jobs, resets the AI engine connection, and clears GPU memory. Use when generation hangs or crashes.<br/>
+                                <strong>Purge VRAM</strong> runs gc.collect() + torch.cuda.empty_cache() to free cached GPU memory without resetting the server.
+                            </p>
                         </div>
                     </div>
 

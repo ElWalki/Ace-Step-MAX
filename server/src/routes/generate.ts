@@ -15,6 +15,7 @@ import {
   checkSpaceHealth,
   cleanupJob,
   cancelJob,
+  reinitializeServer,
   getJobRawResponse,
   downloadAudioToBuffer,
   resolvePythonPath,
@@ -356,6 +357,17 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
   } catch (error) {
     console.error('Generate error:', error);
     res.status(500).json({ error: (error as Error).message || 'Generation failed' });
+  }
+});
+
+// POST /api/generate/reinitialize — Emergency server reset: cancel all jobs, reset Gradio, purge VRAM
+router.post('/reinitialize', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const result = reinitializeServer();
+    res.json(result);
+  } catch (error) {
+    console.error('[Reinitialize] Route error:', error);
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 
