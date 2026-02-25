@@ -360,6 +360,32 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
   }
 });
 
+// GET /api/generate/vram/diagnostic — Deep VRAM scan from Gradio process
+router.get('/vram/diagnostic', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const apiUrl = config.acestep?.apiUrl || 'http://127.0.0.1:7860';
+    const resp = await fetch(`${apiUrl}/v1/vram/diagnostic`);
+    const data = await resp.json();
+    res.json(data);
+  } catch (error) {
+    console.error('[VRAM Diagnostic] Error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// POST /api/generate/vram/force-cleanup — Nuclear VRAM cleanup via Gradio
+router.post('/vram/force-cleanup', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const apiUrl = config.acestep?.apiUrl || 'http://127.0.0.1:7860';
+    const resp = await fetch(`${apiUrl}/v1/vram/force_cleanup`, { method: 'POST' });
+    const data = await resp.json();
+    res.json(data);
+  } catch (error) {
+    console.error('[VRAM Force Cleanup] Error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
 // POST /api/generate/reinitialize — Emergency server reset: cancel all jobs, reset Gradio, purge VRAM
 router.post('/reinitialize', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
   try {

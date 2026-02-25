@@ -23,6 +23,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
     const [reinitResult, setReinitResult] = useState<string | null>(null);
     const [isPurging, setIsPurging] = useState(false);
     const [purgeResult, setPurgeResult] = useState<string | null>(null);
+    const [isScanning, setIsScanning] = useState(false);
+    const [diagnosticReport, setDiagnosticReport] = useState<any>(null);
+    const [isForceCleanup, setIsForceCleanup] = useState(false);
+    const [cleanupResult, setCleanupResult] = useState<string | null>(null);
+
+    const handleScanVram = async () => {
+        if (!token || isScanning) return;
+        setIsScanning(true);
+        setDiagnosticReport(null);
+        try {
+            const result = await generateApi.vramDiagnostic(token);
+            setDiagnosticReport(result?.data || result);
+        } catch (err) {
+            setDiagnosticReport({ error: 'Failed to scan VRAM' });
+        } finally {
+            setIsScanning(false);
+        }
+    };
+
+    const handleForceCleanup = async () => {
+        if (!token || isForceCleanup) return;
+        setIsForceCleanup(true);
+        setCleanupResult(null);
+        try {
+            const result = await generateApi.vramForceCleanup(token);
+            const actions = result?.data?.actions || result?.actions || [];
+            setCleanupResult(`✅ Cleanup done: ${actions.length} actions`);
+            // Auto-rescan after cleanup
+            setTimeout(() => handleScanVram(), 1000);
+        } catch (err) {
+            setCleanupResult('❌ Force cleanup failed');
+        } finally {
+            setIsForceCleanup(false);
+            setTimeout(() => setCleanupResult(null), 8000);
+        }
+    };
 
     const handleReinitialize = async () => {
         if (!token || isReinitializing) return;
@@ -287,6 +323,76 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                 <strong>Reinitialize</strong> cancels all jobs, resets the AI engine connection, and clears GPU memory. Use when generation hangs or crashes.<br/>
                                 <strong>Purge VRAM</strong> runs gc.collect() + torch.cuda.empty_cache() to free cached GPU memory without resetting the server.
                             </p>
+
+                            {/* VRAM Diagnostic */}
+                            <div className="border-t border-zinc-200 dark:border-zinc-700/50 pt-3 mt-3 space-y-2">
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={handleScanVram}
+                                        disabled={isScanning}
+                                        className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs font-medium transition-colors hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50"
+                                    >
+                                        {isScanning ? <Loader2 size={14} className="animate-spin" /> : <Cpu size={14} />}
+                                        {isScanning ? 'Scanning...' : 'Scan VRAM'}
+                                    </button>
+                                    <button
+                                        onClick={handleForceCleanup}
+                                        disabled={isForceCleanup}
+                                        className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg border border-rose-300 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 text-rose-700 dark:text-rose-300 text-xs font-medium transition-colors hover:bg-rose-100 dark:hover:bg-rose-900/40 disabled:opacity-50"
+                                    >
+                                        {isForceCleanup ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+                                        {isForceCleanup ? 'Cleaning...' : 'Force LoRA Cleanup'}
+                                    </button>
+                                </div>
+                                {cleanupResult && (
+                                    <p className={`text-xs font-medium ${cleanupResult.startsWith('✅') ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+                                        {cleanupResult}
+                                    </p>
+                                )}
+                                {diagnosticReport && !diagnosticReport.error && (
+                                    <div className="bg-zinc-900 dark:bg-black rounded-lg p-3 text-[10px] font-mono text-green-400 space-y-1.5 max-h-64 overflow-y-auto">
+                                        <div className="text-zinc-500">── VRAM Diagnostic Report ──</div>
+                                        {diagnosticReport.summary && (
+                                            <>
+                                                <div>GPU: <span className="text-yellow-300">{diagnosticReport.summary.nvidia_used_mb || '?'} MB</span> / {diagnosticReport.summary.nvidia_total_mb || '?'} MB used</div>
+                                                <div>PyTorch allocated: <span className="text-cyan-300">{diagnosticReport.summary.allocated_mb || 0} MB</span> | Reserved: {diagnosticReport.summary.reserved_mb || 0} MB</div>
+                                                <div>GC CUDA tensors: {diagnosticReport.summary.gc_cuda_tensors || 0} ({diagnosticReport.summary.gc_cuda_mb || 0} MB)</div>
+                                            </>
+                                        )}
+                                        <div className="text-zinc-500 pt-1">── Components on GPU ──</div>
+                                        {(diagnosticReport.components || []).map((c: any, i: number) => (
+                                            <div key={i}>
+                                                <span className="text-white">{c.name}</span>: <span className="text-yellow-300">{c.gpu_mb || 0} MB</span> GPU
+                                                {c.cpu_mb ? <span className="text-blue-300"> | {c.cpu_mb} MB CPU</span> : null}
+                                                {c.type ? <span className="text-zinc-500"> [{c.type}]</span> : null}
+                                                {c.lora_layers_count > 0 && <span className="text-orange-400"> LoRA: {c.lora_layers_count} layers</span>}
+                                                {c.peft_wrappers > 1 && <span className="text-red-500 font-bold"> STACKING! ({c.peft_wrappers} wrappers)</span>}
+                                            </div>
+                                        ))}
+                                        {diagnosticReport.lora_state && diagnosticReport.lora_state.lora_loaded_flag && (
+                                            <>
+                                                <div className="text-zinc-500 pt-1">── LoRA State ──</div>
+                                                <div>Loaded: {diagnosticReport.lora_state.lora_loaded_flag ? '✅' : '❌'} | Active: {diagnosticReport.lora_state.use_lora_flag ? '✅' : '❌'} | Scale: {diagnosticReport.lora_state.lora_scale}</div>
+                                                {diagnosticReport.lora_state.active_lora_layers && <div>Active LoRA layers: {diagnosticReport.lora_state.active_lora_layers} ({diagnosticReport.lora_state.lora_gpu_mb || 0} MB)</div>}
+                                                <div>Base decoder backup: {diagnosticReport.lora_state.has_base_decoder_backup ? 'Yes (CPU)' : 'None'}</div>
+                                            </>
+                                        )}
+                                        {(diagnosticReport.warnings || []).length > 0 && (
+                                            <>
+                                                <div className="text-zinc-500 pt-1">── Warnings ──</div>
+                                                {diagnosticReport.warnings.map((w: string, i: number) => (
+                                                    <div key={i} className={w.includes('CRITICAL') || w.includes('Excessive') || w.includes('GPU') ? 'text-red-400 font-bold' : w.includes('No issues') ? 'text-green-400' : 'text-yellow-400'}>
+                                                        {w}
+                                                    </div>
+                                                ))}
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+                                {diagnosticReport?.error && (
+                                    <p className="text-xs text-red-500 font-medium">{diagnosticReport.error}</p>
+                                )}
+                            </div>
                         </div>
                     </div>
 

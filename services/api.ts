@@ -349,6 +349,12 @@ export const generateApi = {
   reinitialize: (token: string): Promise<{ cancelledJobs: number; message: string }> =>
     api('/api/generate/reinitialize', { method: 'POST', token }),
 
+  vramDiagnostic: (token: string): Promise<any> =>
+    api('/api/generate/vram/diagnostic', { token }),
+
+  vramForceCleanup: (token: string): Promise<any> =>
+    api('/api/generate/vram/force-cleanup', { method: 'POST', token }),
+
   getHistory: (token: string): Promise<{ jobs: GenerationJob[] }> =>
     api('/api/generate/history', { token }),
 
