@@ -4,7 +4,7 @@ import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash,
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
-import { generateApi, trainingApi, voicesApi } from '../services/api';
+import { generateApi, trainingApi, voicesApi, vramApi } from '../services/api';
 import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
 import { SongLyricsModal } from './SongLyricsModal';
@@ -373,6 +373,17 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [voicePresetName, setVoicePresetName] = useState('');
   const [presetWaveforms, setPresetWaveforms] = useState<Record<string, number[]>>({});
 
+  // VRAM monitor
+  const [vramStatus, setVramStatus] = useState<{
+    used_mb: number; total_mb: number; free_mb: number; usage_percent: number;
+    name: string; temperature: number; utilization: number;
+  } | null>(null);
+  const [vramExpanded, setVramExpanded] = useState(false);
+  const [isPurging, setIsPurging] = useState(false);
+  const [vramWarning, setVramWarning] = useState(false);
+  const [lastPurgeResult, setLastPurgeResult] = useState<string | null>(null);
+  const vramPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   // Reference tracks modal state
   const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
   const [isLoadingTracks, setIsLoadingTracks] = useState(false);
@@ -698,6 +709,55 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       }
     });
   }, [voicePresets, presetWaveforms, generateWaveformForUrl]);
+
+  // VRAM monitoring — poll every 10s when visible, 30s when collapsed
+  const VRAM_WARNING_THRESHOLD = 90; // percent
+
+  const fetchVramStatus = useCallback(async () => {
+    if (!token) return;
+    try {
+      const data = await vramApi.status(token);
+      if (data.primary_gpu) {
+        setVramStatus(data.primary_gpu);
+        const high = data.primary_gpu.usage_percent >= VRAM_WARNING_THRESHOLD;
+        setVramWarning(high);
+      }
+    } catch {
+      // Silently fail — GPU monitoring is optional
+    }
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    // Initial fetch
+    fetchVramStatus();
+    // Poll interval
+    const interval = vramExpanded ? 10000 : 30000;
+    vramPollRef.current = setInterval(fetchVramStatus, interval);
+    return () => {
+      if (vramPollRef.current) clearInterval(vramPollRef.current);
+    };
+  }, [token, vramExpanded, fetchVramStatus]);
+
+  const handleVramPurge = async () => {
+    if (!token || isPurging) return;
+    setIsPurging(true);
+    setLastPurgeResult(null);
+    try {
+      const result = await vramApi.purge(token);
+      const freed = result.nvidia_freed_mb;
+      setLastPurgeResult(freed > 0 ? `Freed ${freed} MB` : 'Cache cleared');
+      // Refresh status
+      await fetchVramStatus();
+      // Clear the result message after 4s
+      setTimeout(() => setLastPurgeResult(null), 4000);
+    } catch (err) {
+      setLastPurgeResult('Purge failed');
+      setTimeout(() => setLastPurgeResult(null), 4000);
+    } finally {
+      setIsPurging(false);
+    }
+  };
 
   // LoRA API handlers
   const handleLoraToggle = async () => {
@@ -4595,6 +4655,144 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
       {/* Footer Create Button */}
       <div className="p-4 mt-auto sticky bottom-0 bg-zinc-50 dark:bg-suno-panel z-10 border-t border-zinc-200 dark:border-white/5 space-y-3">
+        {/* VRAM Monitor — compact widget */}
+        {vramStatus && (
+          <div className="space-y-1.5">
+            {/* Collapsed: compact bar */}
+            <button
+              type="button"
+              onClick={() => setVramExpanded(!vramExpanded)}
+              className="w-full flex items-center gap-2 group"
+            >
+              {/* GPU icon */}
+              <div className={`relative shrink-0 ${vramWarning ? 'animate-pulse' : ''}`}>
+                <svg className={`w-3.5 h-3.5 ${
+                  vramWarning ? 'text-red-500' :
+                  vramStatus.usage_percent > 70 ? 'text-amber-500' :
+                  'text-zinc-400 dark:text-zinc-500'
+                }`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                  <rect x="8" y="8" width="8" height="8" rx="1" />
+                  <line x1="2" y1="9" x2="4" y2="9" /><line x1="2" y1="15" x2="4" y2="15" />
+                  <line x1="20" y1="9" x2="22" y2="9" /><line x1="20" y1="15" x2="22" y2="15" />
+                  <line x1="9" y1="2" x2="9" y2="4" /><line x1="15" y1="2" x2="15" y2="4" />
+                  <line x1="9" y1="20" x2="9" y2="22" /><line x1="15" y1="20" x2="15" y2="22" />
+                </svg>
+              </div>
+              {/* Progress bar */}
+              <div className="flex-1 h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${
+                    vramWarning ? 'bg-red-500' :
+                    vramStatus.usage_percent > 70 ? 'bg-amber-500' :
+                    vramStatus.usage_percent > 40 ? 'bg-blue-500' :
+                    'bg-green-500'
+                  }`}
+                  style={{ width: `${vramStatus.usage_percent}%` }}
+                />
+              </div>
+              {/* Percentage */}
+              <span className={`text-[10px] font-mono font-bold tabular-nums shrink-0 ${
+                vramWarning ? 'text-red-500' :
+                vramStatus.usage_percent > 70 ? 'text-amber-500' :
+                'text-zinc-400 dark:text-zinc-500'
+              }`}>
+                {Math.round(vramStatus.usage_percent)}%
+              </span>
+              <ChevronDown size={10} className={`text-zinc-400 transition-transform ${vramExpanded ? 'rotate-180' : ''}`} />
+            </button>
+
+            {/* VRAM Warning banner */}
+            {vramWarning && !vramExpanded && (
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/40">
+                <AlertTriangle size={12} className="text-red-500 shrink-0" />
+                <span className="text-[10px] font-medium text-red-700 dark:text-red-300 flex-1">
+                  VRAM almost full — generation may fail or be slow
+                </span>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); handleVramPurge(); }}
+                  disabled={isPurging}
+                  className="px-2 py-0.5 text-[9px] font-bold bg-red-500 text-white rounded hover:bg-red-600 transition-colors disabled:opacity-50"
+                >
+                  {isPurging ? <Loader2 size={10} className="animate-spin" /> : 'Purge'}
+                </button>
+              </div>
+            )}
+
+            {/* Expanded details */}
+            {vramExpanded && (
+              <div className="rounded-lg bg-white dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 p-2.5 space-y-2">
+                {/* GPU name + temp */}
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-300 truncate">
+                    {vramStatus.name}
+                  </span>
+                  {vramStatus.temperature > 0 && (
+                    <span className={`text-[10px] font-mono ${
+                      vramStatus.temperature > 85 ? 'text-red-500' :
+                      vramStatus.temperature > 70 ? 'text-amber-500' :
+                      'text-zinc-400'
+                    }`}>
+                      {vramStatus.temperature}°C
+                    </span>
+                  )}
+                </div>
+
+                {/* Usage details */}
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="text-center">
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500">Used</div>
+                    <div className="text-xs font-bold text-zinc-700 dark:text-zinc-200">{(vramStatus.used_mb / 1024).toFixed(1)}G</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500">Free</div>
+                    <div className="text-xs font-bold text-green-600 dark:text-green-400">{(vramStatus.free_mb / 1024).toFixed(1)}G</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-[10px] text-zinc-400 dark:text-zinc-500">Total</div>
+                    <div className="text-xs font-bold text-zinc-700 dark:text-zinc-200">{(vramStatus.total_mb / 1024).toFixed(1)}G</div>
+                  </div>
+                </div>
+
+                {/* GPU utilization bar */}
+                {vramStatus.utilization > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-zinc-400 dark:text-zinc-500 uppercase tracking-wide w-8">GPU</span>
+                    <div className="flex-1 h-1 bg-zinc-200 dark:bg-zinc-700 rounded-full overflow-hidden">
+                      <div className="h-full bg-cyan-500 rounded-full transition-all duration-500" style={{ width: `${vramStatus.utilization}%` }} />
+                    </div>
+                    <span className="text-[10px] font-mono text-zinc-400 w-8 text-right">{vramStatus.utilization}%</span>
+                  </div>
+                )}
+
+                {/* Purge button */}
+                <button
+                  type="button"
+                  onClick={handleVramPurge}
+                  disabled={isPurging}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors bg-zinc-100 dark:bg-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-600 text-zinc-700 dark:text-zinc-200 disabled:opacity-50"
+                >
+                  {isPurging ? (
+                    <><Loader2 size={12} className="animate-spin" /> Purging memory...</>
+                  ) : (
+                    <><RefreshCw size={12} /> Purge VRAM Cache</>
+                  )}
+                </button>
+
+                {/* Purge result feedback */}
+                {lastPurgeResult && (
+                  <div className={`text-center text-[10px] font-medium ${
+                    lastPurgeResult.includes('failed') ? 'text-red-500' : 'text-green-600 dark:text-green-400'
+                  }`}>
+                    {lastPurgeResult}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {activeJobCount > 0 && (
           <div className="flex items-center justify-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
             <Loader2 size={12} className="animate-spin text-pink-500" />

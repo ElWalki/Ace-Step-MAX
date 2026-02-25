@@ -946,3 +946,57 @@ export const voicesApi = {
   delete: (id: string, token?: string): Promise<{ success: boolean }> => 
     api(`/api/voices/${id}`, { method: 'DELETE', token }),
 };
+
+// VRAM monitoring API
+export const vramApi = {
+  status: (token?: string): Promise<{
+    success: boolean;
+    gpus: Array<{
+      index: number;
+      name: string;
+      used_mb: number;
+      total_mb: number;
+      free_mb: number;
+      usage_percent: number;
+      temperature: number;
+      utilization: number;
+    }>;
+    gpu_count: number;
+    primary_gpu: {
+      index: number;
+      name: string;
+      used_mb: number;
+      total_mb: number;
+      free_mb: number;
+      usage_percent: number;
+      temperature: number;
+      utilization: number;
+    } | null;
+    torch: {
+      allocated_mb: number;
+      reserved_mb: number;
+      max_allocated_mb: number;
+      max_reserved_mb: number;
+      fragmentation_mb: number;
+    } | null;
+  }> => api('/api/vram/status', { token }),
+
+  purge: (token?: string): Promise<{
+    success: boolean;
+    purge: {
+      gc_collected: number;
+      cuda_cache_cleared: boolean;
+      cuda_memory_reset: boolean;
+      freed_mb?: number;
+    };
+    before_used_mb: number;
+    after_used_mb: number;
+    nvidia_freed_mb: number;
+    primary_gpu: {
+      used_mb: number;
+      total_mb: number;
+      free_mb: number;
+      usage_percent: number;
+    } | null;
+  }> => api('/api/vram/purge', { method: 'POST', token }),
+};
