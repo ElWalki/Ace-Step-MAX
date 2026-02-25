@@ -922,3 +922,27 @@ export const trainingApi = {
     error?: string;
   }> => api('/api/training/separate-stems', { method: 'POST', body: { audioPath, quality }, token }),
 };
+
+// Voice presets API
+export const voicesApi = {
+  list: (token?: string): Promise<Array<{
+    id: string;
+    name: string;
+    audio_url: string;
+    thumbnail_url: string | null;
+    duration: number | null;
+    created_at: string;
+  }>> => api('/api/voices', { token }),
+
+  create: (name: string, audioUrl: string, duration?: number, token?: string): Promise<{
+    id: string;
+    name: string;
+    audio_url: string;
+    thumbnail_url: string | null;
+    duration: number | null;
+    created_at: string;
+  }> => api('/api/voices', { method: 'POST', body: { name, audioUrl, duration }, token }),
+
+  delete: (id: string, token?: string): Promise<{ success: boolean }> => 
+    api(`/api/voices/${id}`, { method: 'DELETE', token }),
+};

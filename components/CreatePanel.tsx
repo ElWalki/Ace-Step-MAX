@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic } from 'lucide-react';
+import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic, FileText, Guitar, AlertTriangle, X } from 'lucide-react';
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { generateApi, trainingApi } from '../services/api';
 import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
+import { SongLyricsModal } from './SongLyricsModal';
 
 interface ReferenceTrack {
   id: string;
@@ -357,6 +358,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [separationQuality, setSeparationQuality] = useState<'rapida' | 'alta' | 'maxima'>('alta');
   const [useVocalAsReference, setUseVocalAsReference] = useState(true);
   const [useInstrumentalAsSource, setUseInstrumentalAsSource] = useState(false);
+  
+  // Vocal workflow modals
+  const [showLyricsModal, setShowLyricsModal] = useState(false);
+  const [showCoverSongModal, setShowCoverSongModal] = useState(false);
 
   // Reference tracks modal state
   const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
@@ -1376,12 +1381,30 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   const useReferenceTrack = (track: { audio_url: string; title?: string }) => {
+    // If cover song modal is active, set song as source and vocal as reference
+    if (showCoverSongModal && vocalAudioUrl) {
+      setSourceAudioUrl(track.audio_url);
+      setSourceAudioTitle(track.title || 'Song');
+      setSourceTime(0);
+      setSourceDuration(0);
+      setReferenceAudioUrl(vocalAudioUrl);
+      setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
+      setReferenceTime(0);
+      setReferenceDuration(0);
+      setTaskType('cover');
+      setShowCoverSongModal(false);
+      setShowAudioModal(false);
+      setPlayingTrackId(null);
+      setPlayingTrackSource(null);
+      return;
+    }
+    
     // If vocal tab is active, trigger Demucs separation instead of setting as reference
     if (audioTab === 'vocal') {
       setShowAudioModal(false);
       setPlayingTrackId(null);
       setPlayingTrackSource(null);
-      const title = track.title ? track.title.replace(/\.[^/.]+$/, '') : 'Audio';
+      const title = track.title || 'Track';
       void handleSeparateStems(track.audio_url, title);
       return;
     }
@@ -2435,22 +2458,25 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 {audioTab === 'vocal' && vocalAudioUrl && (
                   <div className="space-y-2">
                     {/* Active vocal config status */}
-                    {(sourceAudioUrl === vocalAudioUrl || referenceAudioUrl === vocalAudioUrl) && (
+                    {(sourceAudioUrl === vocalAudioUrl || referenceAudioUrl === vocalAudioUrl || sourceAudioUrl === instrumentalAudioUrl) && (
                       <div className="flex items-center gap-2 p-2 rounded-lg bg-violet-100 dark:bg-violet-900/30 border border-violet-300 dark:border-violet-700/50">
                         <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
                         <span className="text-[11px] font-medium text-violet-800 dark:text-violet-200">
-                          {sourceAudioUrl === vocalAudioUrl && referenceAudioUrl === vocalAudioUrl
-                            ? 'Vocal set as Source + Reference'
-                            : sourceAudioUrl === vocalAudioUrl
-                            ? 'Vocal set as Source (Cover mode)'
-                            : 'Vocal set as Reference (Style mode)'}
-                          {instrumentalAudioUrl && sourceAudioUrl === instrumentalAudioUrl && ' + Instrumental as Source'}
+                          {sourceAudioUrl === vocalAudioUrl && taskType === 'cover'
+                            ? '🎤 Follow Voice mode active'
+                            : referenceAudioUrl === vocalAudioUrl && !sourceAudioUrl
+                            ? '✨ Voice Style Reference active'
+                            : sourceAudioUrl === instrumentalAudioUrl && referenceAudioUrl === vocalAudioUrl
+                            ? '🎹 Cover Song mode active'
+                            : sourceAudioUrl && referenceAudioUrl === vocalAudioUrl
+                            ? '🎸 Cover with Voice active'
+                            : 'Vocal configured'}
                           {' — Ready to Generate'}
                         </span>
                         <button
                           type="button"
                           onClick={() => {
-                            if (sourceAudioUrl === vocalAudioUrl || sourceAudioUrl === instrumentalAudioUrl) {
+                            if (sourceAudioUrl === vocalAudioUrl || sourceAudioUrl === instrumentalAudioUrl || sourceAudioUrl) {
                               setSourceAudioUrl('');
                               setSourceAudioTitle('');
                             }
@@ -2467,12 +2493,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       </div>
                     )}
 
-                    {/* Workflow buttons */}
-                    {sourceAudioUrl !== vocalAudioUrl && referenceAudioUrl !== vocalAudioUrl && (
+                    {/* Workflow buttons - 5 options */}
+                    {sourceAudioUrl !== vocalAudioUrl && referenceAudioUrl !== vocalAudioUrl && !sourceAudioUrl && (
                       <div className="space-y-1.5">
                         <label className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">How to use this vocal</label>
 
-                        {/* Option A: Vocal as Source (Cover mode) */}
+                        {/* Option 1: Follow This Voice (Cover mode) */}
                         <button
                           type="button"
                           onClick={() => {
@@ -2482,16 +2508,80 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             setSourceDuration(0);
                             setTaskType('cover');
                           }}
-                          className="w-full flex items-start gap-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/15 hover:bg-violet-100 dark:hover:bg-violet-900/25 border border-violet-200 dark:border-violet-800/30 px-3 py-2.5 text-left transition-colors group"
+                          disabled={loraLoaded}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/15 hover:bg-violet-100 dark:hover:bg-violet-900/25 border border-violet-200 dark:border-violet-800/30 px-3 py-2.5 text-left transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                           <Mic size={14} className="text-violet-500 mt-0.5 shrink-0" />
-                          <div>
-                            <div className="text-[11px] font-bold text-violet-700 dark:text-violet-300 group-hover:text-violet-800 dark:group-hover:text-violet-200">Generate following this voice</div>
-                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">New song that follows the vocal melody and rhythm. Best for making the AI sing like the loaded voice.</div>
+                          <div className="flex-1">
+                            <div className="text-[11px] font-bold text-violet-700 dark:text-violet-300 group-hover:text-violet-800 dark:group-hover:text-violet-200 flex items-center gap-1.5">
+                              🎤 Follow This Voice
+                              {loraLoaded && <AlertTriangle size={10} className="text-orange-500" />}
+                            </div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">
+                              Generate new instrumental following the vocal melody and rhythm.
+                              {loraLoaded && <span className="text-orange-500 font-medium"> ⚠️ Unload LoRAs first to avoid errors.</span>}
+                            </div>
                           </div>
                         </button>
 
-                        {/* Option B: Vocal as Reference (style transfer) */}
+                        {/* Option 2: Sing Custom Lyrics */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReferenceAudioUrl(vocalAudioUrl);
+                            setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
+                            setReferenceTime(0);
+                            setReferenceDuration(0);
+                            // Focus lyrics textarea
+                            setTimeout(() => {
+                              const lyricsTextarea = document.querySelector('textarea[placeholder*="lyrics"]') as HTMLTextAreaElement;
+                              if (lyricsTextarea) {
+                                lyricsTextarea.focus();
+                                lyricsTextarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }
+                            }, 100);
+                          }}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-blue-50 dark:bg-blue-900/15 hover:bg-blue-100 dark:hover:bg-blue-900/25 border border-blue-200 dark:border-blue-800/30 px-3 py-2.5 text-left transition-colors group"
+                        >
+                          <FileText size={14} className="text-blue-500 mt-0.5 shrink-0" />
+                          <div>
+                            <div className="text-[11px] font-bold text-blue-700 dark:text-blue-300 group-hover:text-blue-800 dark:group-hover:text-blue-200">🎵 Sing Custom Lyrics</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Write lyrics below — AI generates with this voice character and style.</div>
+                          </div>
+                        </button>
+
+                        {/* Option 3: Sing a Song's Lyrics */}
+                        <button
+                          type="button"
+                          onClick={() => setShowLyricsModal(true)}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-pink-50 dark:bg-pink-900/15 hover:bg-pink-100 dark:hover:bg-pink-900/25 border border-pink-200 dark:border-pink-800/30 px-3 py-2.5 text-left transition-colors group"
+                        >
+                          <Music2 size={14} className="text-pink-500 mt-0.5 shrink-0" />
+                          <div>
+                            <div className="text-[11px] font-bold text-pink-700 dark:text-pink-300 group-hover:text-pink-800 dark:group-hover:text-pink-200">🎸 Sing a Song's Lyrics</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Pick a song, extract lyrics, make this voice sing them.</div>
+                          </div>
+                        </button>
+
+                        {/* Option 4: Cover a Song */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowCoverSongModal(true);
+                            setAudioModalTarget('source');
+                            setShowAudioModal(true);
+                            setLibraryTab('created');
+                          }}
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 border border-emerald-200 dark:border-emerald-800/30 px-3 py-2.5 text-left transition-colors group"
+                        >
+                          <Guitar size={14} className="text-emerald-500 mt-0.5 shrink-0" />
+                          <div>
+                            <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 group-hover:text-emerald-800 dark:group-hover:text-emerald-200">🎹 Cover a Song</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Regenerate any song with this voice character and style.</div>
+                          </div>
+                        </button>
+
+                        {/* Option 5: Voice Style Reference */}
                         <button
                           type="button"
                           onClick={() => {
@@ -2500,39 +2590,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             setReferenceTime(0);
                             setReferenceDuration(0);
                           }}
-                          className="w-full flex items-start gap-2.5 rounded-lg bg-pink-50 dark:bg-pink-900/15 hover:bg-pink-100 dark:hover:bg-pink-900/25 border border-pink-200 dark:border-pink-800/30 px-3 py-2.5 text-left transition-colors group"
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/15 hover:bg-amber-100 dark:hover:bg-amber-900/25 border border-amber-200 dark:border-amber-800/30 px-3 py-2.5 text-left transition-colors group"
                         >
-                          <Music2 size={14} className="text-pink-500 mt-0.5 shrink-0" />
+                          <Sparkles size={14} className="text-amber-500 mt-0.5 shrink-0" />
                           <div>
-                            <div className="text-[11px] font-bold text-pink-700 dark:text-pink-300 group-hover:text-pink-800 dark:group-hover:text-pink-200">Use vocal style as reference</div>
-                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">New song inspired by the vocal timbre and feel. The AI generates freely but captures the voice character.</div>
+                            <div className="text-[11px] font-bold text-amber-700 dark:text-amber-300 group-hover:text-amber-800 dark:group-hover:text-amber-200">✨ Voice Style Reference</div>
+                            <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Generate freely but capture the voice timbre and feel.</div>
                           </div>
                         </button>
-
-                        {/* Option C: Full cover — instrumental as Source + vocal as Reference */}
-                        {instrumentalAudioUrl && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSourceAudioUrl(instrumentalAudioUrl);
-                              setSourceAudioTitle(`${vocalAudioTitle?.replace(' (Vocal)', '') || 'Track'} (Instrumental)`);
-                              setSourceTime(0);
-                              setSourceDuration(0);
-                              setReferenceAudioUrl(vocalAudioUrl);
-                              setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
-                              setReferenceTime(0);
-                              setReferenceDuration(0);
-                              setTaskType('cover');
-                            }}
-                            className="w-full flex items-start gap-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/15 hover:bg-emerald-100 dark:hover:bg-emerald-900/25 border border-emerald-200 dark:border-emerald-800/30 px-3 py-2.5 text-left transition-colors group"
-                          >
-                            <Sparkles size={14} className="text-emerald-500 mt-0.5 shrink-0" />
-                            <div>
-                              <div className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 group-hover:text-emerald-800 dark:group-hover:text-emerald-200">Full cover: instrumental + vocal style</div>
-                              <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Regenerate the instrumental as source with the vocal style as reference. Best for creating a new version of the song.</div>
-                            </div>
-                          </button>
-                        )}
                       </div>
                     )}
                   </div>
@@ -4241,6 +4306,53 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Lyrics Modal */}
+      <SongLyricsModal
+        isOpen={showLyricsModal}
+        onClose={() => setShowLyricsModal(false)}
+        onSelectSong={(song, lyrics) => {
+          setReferenceAudioUrl(vocalAudioUrl);
+          setReferenceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Style Ref)`);
+          setReferenceTime(0);
+          setReferenceDuration(0);
+          setLyrics(lyrics);
+          setTitle(song.title);
+          if (song.style) setStyle(song.style);
+          if (song.generationParams?.duration) setDuration(song.generationParams.duration);
+          setTimeout(() => {
+            const lyricsTextarea = document.querySelector('textarea[placeholder*="lyrics"]') as HTMLTextAreaElement;
+            if (lyricsTextarea) {
+              lyricsTextarea.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+          }, 100);
+        }}
+      />
+
+      {/* Cover Song Modal - reuse audio modal */}
+      {showCoverSongModal && showAudioModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between p-6 border-b border-zinc-200 dark:border-zinc-800">
+              <div>
+                <h2 className="text-2xl font-bold text-zinc-900 dark:text-white">Select Song to Cover</h2>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
+                  Choose a song to regenerate with the loaded voice
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowCoverSongModal(false);
+                  setShowAudioModal(false);
+                }}
+                className="p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg transition-colors"
+              >
+                <X size={20} className="text-zinc-500" />
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Footer Create Button */}

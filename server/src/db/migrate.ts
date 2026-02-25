@@ -112,6 +112,17 @@ CREATE TABLE IF NOT EXISTS reference_tracks (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Voice presets (saved vocals for reuse)
+CREATE TABLE IF NOT EXISTS voice_presets (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  audio_url TEXT NOT NULL,
+  thumbnail_url TEXT,
+  duration REAL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Contact submissions table
 CREATE TABLE IF NOT EXISTS contact_submissions (
   id TEXT PRIMARY KEY,
@@ -139,6 +150,7 @@ CREATE INDEX IF NOT EXISTS idx_followers_follower ON followers(follower_id);
 CREATE INDEX IF NOT EXISTS idx_followers_following ON followers(following_id);
 CREATE INDEX IF NOT EXISTS idx_reference_tracks_user_id ON reference_tracks(user_id);
 CREATE INDEX IF NOT EXISTS idx_reference_tracks_created_at ON reference_tracks(created_at);
+CREATE INDEX IF NOT EXISTS idx_voice_presets_user_id ON voice_presets(user_id);
 `;
 
 function migrate(): void {
