@@ -76,6 +76,42 @@ const ACESTEP_DIR = resolveAceStepPath();
 const SCRIPTS_DIR = path.join(__dirname, '../../scripts');
 const PYTHON_SCRIPT = path.join(SCRIPTS_DIR, 'simple_generate.py');
 
+/**
+ * Auto-purge VRAM after generation to prevent memory accumulation.
+ * Runs gc.collect() + torch.cuda.empty_cache() via the vram_manager script.
+ * Non-blocking — errors are silently logged so they never affect generation results.
+ */
+function autoPurgeVram(): void {
+  try {
+    const pythonPath = resolvePythonPath(ACESTEP_DIR);
+    const scriptPath = path.join(SCRIPTS_DIR, 'vram_manager.py');
+    if (!existsSync(scriptPath)) return;
+
+    const proc = spawn(pythonPath, [scriptPath, '--action', 'purge', '--json'], {
+      cwd: ACESTEP_DIR,
+      env: { ...process.env, ACESTEP_PATH: ACESTEP_DIR },
+      timeout: 15000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.on('close', (code: number | null) => {
+      if (code === 0) {
+        try {
+          const lines = stdout.trim().split('\n');
+          const jsonStr = lines.find(l => l.startsWith('{')) || '';
+          const parsed = JSON.parse(jsonStr);
+          const freed = parsed.nvidia_freed_mb || 0;
+          if (freed > 0) console.log(`[VRAM] Auto-purge freed ${freed} MB`);
+          else console.log('[VRAM] Auto-purge: cache cleared');
+        } catch { /* ignore parse errors */ }
+      }
+    });
+    proc.on('error', () => { /* silently ignore */ });
+  } catch { /* silently ignore */ }
+}
+
 // ---------------------------------------------------------------------------
 // Gradio generation: map params to the 45 positional args for /generation_wrapper
 // ---------------------------------------------------------------------------
@@ -347,6 +383,7 @@ interface ActiveJob {
   queuePosition?: number;
   progress?: number;
   stage?: string;
+  cancelled?: boolean;
 }
 
 const activeJobs = new Map<string, ActiveJob>();
@@ -371,6 +408,52 @@ export async function discoverEndpoints(): Promise<unknown> {
 // Reset client — forces Gradio reconnection on next request
 export function resetClient(): void {
   resetGradioClient();
+}
+
+/**
+ * Cancel a running or queued generation job.
+ * For running jobs: resets the Gradio client (force-interrupts predict) + purges VRAM.
+ * For queued jobs: removes from queue immediately.
+ */
+export function cancelJob(jobId: string): { success: boolean; message: string } {
+  const job = activeJobs.get(jobId);
+  if (!job) {
+    return { success: false, message: 'Job not found' };
+  }
+
+  if (job.status === 'succeeded' || job.status === 'failed') {
+    return { success: false, message: `Job already ${job.status}` };
+  }
+
+  const wasRunning = job.status === 'running';
+
+  // Mark as cancelled
+  job.cancelled = true;
+  job.status = 'failed';
+  job.error = 'Cancelled by user';
+  job.stage = 'Cancelled';
+
+  // Remove from queue if queued
+  const queueIdx = jobQueue.indexOf(jobId);
+  if (queueIdx >= 0) {
+    jobQueue.splice(queueIdx, 1);
+    // Update queue positions
+    jobQueue.forEach((id, index) => {
+      const queuedJob = activeJobs.get(id);
+      if (queuedJob) queuedJob.queuePosition = index + 1;
+    });
+  }
+
+  // If was running, reset Gradio client to force-interrupt the predict call
+  if (wasRunning) {
+    console.log(`[Cancel] Job ${jobId}: Resetting Gradio client to interrupt generation`);
+    resetGradioClient();
+    // Purge VRAM to clean up residual tensors from interrupted generation
+    autoPurgeVram();
+  }
+
+  console.log(`[Cancel] Job ${jobId}: ${wasRunning ? 'Running job interrupted' : 'Queued job removed'}`);
+  return { success: true, message: wasRunning ? 'Generation interrupted' : 'Job removed from queue' };
 }
 
 // ---------------------------------------------------------------------------
@@ -454,15 +537,18 @@ async function processGeneration(
   if (gradioUp) {
     try {
       await processGenerationViaGradio(jobId, params, job);
+      autoPurgeVram();
       return;
     } catch (error) {
       console.error(`Job ${jobId}: Gradio generation failed, trying Python spawn fallback`, error);
+      autoPurgeVram();
       // Fall through to Python spawn
     }
   }
 
   // Fallback: Python spawn
   await processGenerationViaPython(jobId, params, job);
+  autoPurgeVram();
 }
 
 async function processGenerationViaGradio(

@@ -1789,7 +1789,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         duration,
         inferenceSteps,
         guidanceScale,
-        batchSize,
+        // Force batchSize=1 when LoRA is loaded + cover mode to prevent tensor mismatch
+        batchSize: (loraLoaded && taskType === 'cover') ? 1 : batchSize,
         randomSeed: randomSeed || i > 0, // Force random for subsequent bulk jobs
         seed: jobSeed,
         thinking,
@@ -4790,6 +4791,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {/* LoRA + Cover safety warning */}
+        {loraLoaded && taskType === 'cover' && batchSize > 1 && (
+          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/40">
+            <AlertTriangle size={12} className="text-amber-500 shrink-0" />
+            <span className="text-[10px] text-amber-700 dark:text-amber-300">
+              LoRA + Cover: batch size forced to 1 to prevent tensor errors
+            </span>
           </div>
         )}
 

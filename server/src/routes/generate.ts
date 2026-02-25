@@ -14,6 +14,7 @@ import {
   discoverEndpoints,
   checkSpaceHealth,
   cleanupJob,
+  cancelJob,
   getJobRawResponse,
   downloadAudioToBuffer,
   resolvePythonPath,
@@ -355,6 +356,39 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
   } catch (error) {
     console.error('Generate error:', error);
     res.status(500).json({ error: (error as Error).message || 'Generation failed' });
+  }
+});
+
+// POST /api/generate/cancel/:jobId — Cancel a running or queued generation
+router.post('/cancel/:jobId', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { jobId } = req.params;
+
+    // Verify job ownership
+    const jobResult = await pool.query(
+      'SELECT user_id FROM generation_jobs WHERE id = ?',
+      [jobId]
+    );
+    if (jobResult.rows.length > 0 && jobResult.rows[0].user_id !== req.user!.id) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    // Cancel the in-memory job
+    const result = cancelJob(jobId);
+
+    // Update DB status
+    if (result.success) {
+      await pool.query(
+        `UPDATE generation_jobs SET status = 'failed', error = 'Cancelled by user' WHERE id = ? AND status IN ('pending', 'queued', 'running')`,
+        [jobId]
+      );
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('[Cancel] Route error:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
   }
 });
 

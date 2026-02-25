@@ -343,6 +343,9 @@ export const generateApi = {
   getStatus: (jobId: string, token: string): Promise<GenerationJob> =>
     api(`/api/generate/status/${jobId}`, { token }),
 
+  cancelJob: (jobId: string, token: string): Promise<{ success: boolean; message: string }> =>
+    api(`/api/generate/cancel/${jobId}`, { method: 'POST', token }),
+
   getHistory: (token: string): Promise<{ jobs: GenerationJob[] }> =>
     api('/api/generate/history', { token }),
 

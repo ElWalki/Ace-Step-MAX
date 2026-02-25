@@ -657,6 +657,26 @@ function AppContent() {
     }
   }, []);
 
+  // Cancel a running or queued generation job
+  const handleCancelJob = useCallback(async (song: Song) => {
+    if (!token) return;
+    // Find the active job whose tempId matches this song
+    for (const [jobId, jobData] of activeJobsRef.current.entries()) {
+      if (jobData.tempId === song.id) {
+        try {
+          await generateApi.cancelJob(jobId, token);
+        } catch (err) {
+          console.error('Failed to cancel job:', err);
+        }
+        cleanupJob(jobId, jobData.tempId);
+        showToast('Generation cancelled', 'info');
+        return;
+      }
+    }
+    // If no active job found, just remove the temp song
+    setSongs(prev => prev.filter(s => s.id !== song.id));
+  }, [token, cleanupJob]);
+
   // Refresh songs list (called when any job completes successfully)
   const refreshSongsList = useCallback(async () => {
     if (!token) return;
@@ -1389,6 +1409,7 @@ function AppContent() {
                 onUseUploadAsReference={handleUseUploadAsReference}
                 onCoverUpload={handleCoverUpload}
                 onSongUpdate={handleSongUpdate}
+                onCancelJob={handleCancelJob}
               />
             </div>
 

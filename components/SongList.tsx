@@ -34,6 +34,7 @@ interface SongListProps {
     onUseUploadAsReference?: (track: { audio_url: string; filename: string }) => void;
     onCoverUpload?: (track: { audio_url: string; filename: string }) => void;
     onEditMetadata?: (song: Song) => void;
+    onCancelJob?: (song: Song) => void;
 }
 
 // ... existing code ...
@@ -114,7 +115,8 @@ export const SongList: React.FC<SongListProps> = ({
     onPrepareTraining,
     onUseUploadAsReference,
     onCoverUpload,
-    onEditMetadata
+    onEditMetadata,
+    onCancelJob
 }) => {
     const { user, token } = useAuth();
     const { t } = useI18n();
@@ -425,6 +427,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     onCoverSong={() => onCoverSong?.(item.song)}
                                     onPrepareTraining={() => onPrepareTraining?.(item.song)}
                                     onViewConfig={() => setConfigSong(item.song)}
+                                    onCancelJob={onCancelJob ? () => onCancelJob(item.song) : undefined}
                                     onEditMetadata={() => onEditMetadata?.(item.song)}
                                 />
                             ) : (
@@ -519,6 +522,7 @@ interface SongItemProps {
     onPrepareTraining?: () => void;
     onViewConfig?: () => void;
     onEditMetadata?: () => void;
+    onCancelJob?: () => void;
 }
 
 const SongItem: React.FC<SongItemProps> = React.memo(({
@@ -546,7 +550,8 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
     onCoverSong,
     onPrepareTraining,
     onViewConfig,
-    onEditMetadata
+    onEditMetadata,
+    onCancelJob
 }) => {
     const { token } = useAuth();
     const [showDropdown, setShowDropdown] = useState(false);
@@ -671,6 +676,16 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
                                 <div className="w-1 bg-pink-500 rounded-full music-bar-anim" style={{ animationDelay: '0.4s' }}></div>
                                 <div className="w-1 bg-pink-500 rounded-full music-bar-anim" style={{ animationDelay: '0.1s' }}></div>
                             </div>
+                        )}
+                        {/* Cancel button */}
+                        {onCancelJob && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); onCancelJob(song); }}
+                                className="absolute top-1 right-1 w-5 h-5 rounded-full bg-red-500/80 hover:bg-red-600 flex items-center justify-center transition-colors opacity-0 group-hover/image:opacity-100"
+                                title="Cancel generation"
+                            >
+                                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/></svg>
+                            </button>
                         )}
                     </div>
                 ) : (
