@@ -120,6 +120,15 @@ export interface GenerationParams {
   trackName?: string;
   completeTrackClasses?: string[];
   isFormatCaption?: boolean;
+
+  // LoRA state at generation time
+  loraLoaded?: boolean;
+  loraPath?: string;
+  loraName?: string;
+  loraScale?: number;
+  loraEnabled?: boolean;
+  loraTriggerTag?: string;
+  loraTagPosition?: string;
 }
 
 export interface PlayerState {

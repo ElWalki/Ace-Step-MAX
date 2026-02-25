@@ -3,7 +3,7 @@ import { Song } from '../types';
 import { songsApi, getAudioUrl } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
-import { ArrowLeft, Play, Pause, Heart, Share2, MoreHorizontal, ThumbsDown, Music as MusicIcon, Edit3, Eye } from 'lucide-react';
+import { ArrowLeft, Play, Pause, Heart, Share2, MoreHorizontal, ThumbsDown, Music as MusicIcon, Edit3, Eye, ChevronDown } from 'lucide-react';
 import { ShareModal } from './ShareModal';
 import { SongDropdownMenu } from './SongDropdownMenu';
 
@@ -89,6 +89,7 @@ export const SongProfile: React.FC<SongProfileProps> = ({ songId, onBack, onPlay
     const [loading, setLoading] = useState(true);
     const [shareModalOpen, setShareModalOpen] = useState(false);
     const [showDropdown, setShowDropdown] = useState(false);
+    const [showConfig, setShowConfig] = useState(false);
 
     const isCurrentSong = song && currentSong?.id === song.id;
     const isCurrentlyPlaying = isCurrentSong && isPlaying;
@@ -128,6 +129,13 @@ export const SongProfile: React.FC<SongProfileProps> = ({ songId, onBack, onPlay
                 userId: response.song.user_id,
                 creator: response.song.creator,
                 creator_avatar: response.song.creator_avatar,
+                generationParams: (() => {
+                    try {
+                        const gp = response.song.generation_params;
+                        if (!gp) return undefined;
+                        return typeof gp === 'string' ? JSON.parse(gp) : gp;
+                    } catch { return undefined; }
+                })(),
             };
 
             setSong(transformedSong);
@@ -303,6 +311,7 @@ export const SongProfile: React.FC<SongProfileProps> = ({ songId, onBack, onPlay
                                         onAddToPlaylist={() => {}}
                                         onDelete={() => onDelete?.(song)}
                                         onShare={() => setShareModalOpen(true)}
+                                        onViewConfig={() => setShowConfig(true)}
                                     />
                                 )}
                             </div>
@@ -315,6 +324,122 @@ export const SongProfile: React.FC<SongProfileProps> = ({ songId, onBack, onPlay
                                 <div className="text-sm text-zinc-700 dark:text-zinc-300 whitespace-pre-line leading-relaxed max-h-72 md:max-h-96 overflow-y-auto">
                                     {song.lyrics}
                                 </div>
+                            </div>
+                        )}
+
+                        {/* Generation Config */}
+                        {song.generationParams && (
+                            <div className="bg-white dark:bg-zinc-900/50 border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden">
+                                <button
+                                    onClick={() => setShowConfig(!showConfig)}
+                                    className="w-full px-4 py-3 flex items-center justify-between hover:bg-zinc-50 dark:hover:bg-zinc-800/50 transition-colors"
+                                >
+                                    <h3 className="text-sm font-semibold text-zinc-900 dark:text-white flex items-center gap-2">
+                                        <svg className="w-4 h-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                        Generation Config
+                                    </h3>
+                                    <ChevronDown size={16} className={`text-zinc-400 transition-transform duration-200 ${showConfig ? 'rotate-180' : ''}`} />
+                                </button>
+                                {showConfig && (() => {
+                                    const p = song.generationParams;
+                                    // Build organized sections
+                                    const sections: { title: string; icon: string; items: { label: string; value: string | number | boolean | undefined }[] }[] = [
+                                        {
+                                            title: 'Model',
+                                            icon: '🏗️',
+                                            items: [
+                                                { label: 'DiT Model', value: p.ditModel },
+                                                { label: 'Inference Method', value: p.inferMethod?.toUpperCase() },
+                                                { label: 'Inference Steps', value: p.inferenceSteps },
+                                                { label: 'Guidance Scale', value: p.guidanceScale },
+                                                { label: 'Shift', value: p.shift },
+                                                { label: 'Audio Format', value: p.audioFormat?.toUpperCase() },
+                                                { label: 'Seed', value: p.randomSeed ? 'Random' : p.seed },
+                                            ],
+                                        },
+                                        {
+                                            title: 'LoRA',
+                                            icon: '🎛️',
+                                            items: [
+                                                { label: 'LoRA', value: p.loraLoaded ? 'Yes' : 'No' },
+                                                ...(p.loraLoaded ? [
+                                                    { label: 'Name', value: p.loraName || p.loraPath?.split(/[\\/]/).pop() },
+                                                    { label: 'Scale', value: p.loraScale },
+                                                    { label: 'Enabled', value: p.loraEnabled ? 'Yes' : 'No' },
+                                                    { label: 'Trigger Tag', value: p.loraTriggerTag },
+                                                    { label: 'Tag Position', value: p.loraTagPosition },
+                                                ] : []),
+                                            ],
+                                        },
+                                        {
+                                            title: 'Music',
+                                            icon: '🎵',
+                                            items: [
+                                                { label: 'Duration', value: p.duration && p.duration > 0 ? `${p.duration}s` : 'Auto' },
+                                                { label: 'BPM', value: p.bpm || 'Auto' },
+                                                { label: 'Key', value: p.keyScale || 'Auto' },
+                                                { label: 'Time Signature', value: p.timeSignature || 'Auto' },
+                                                { label: 'Instrumental', value: p.instrumental ? 'Yes' : 'No' },
+                                                { label: 'Vocal Language', value: p.vocalLanguage || 'Auto' },
+                                                { label: 'Batch Size', value: p.batchSize },
+                                            ],
+                                        },
+                                        {
+                                            title: 'LM (Language Model)',
+                                            icon: '🧠',
+                                            items: [
+                                                { label: 'Backend', value: p.lmBackend?.toUpperCase() || 'PT' },
+                                                { label: 'LM Model', value: p.lmModel || 'Default' },
+                                                { label: 'Temperature', value: p.lmTemperature },
+                                                { label: 'CFG Scale', value: p.lmCfgScale },
+                                                { label: 'Top-K', value: p.lmTopK },
+                                                { label: 'Top-P', value: p.lmTopP },
+                                                { label: 'Thinking', value: p.thinking ? 'Yes' : 'No' },
+                                            ],
+                                        },
+                                        {
+                                            title: 'Advanced',
+                                            icon: '⚙️',
+                                            items: [
+                                                { label: 'Mode', value: p.customMode ? 'Custom' : 'Simple' },
+                                                { label: 'ADG', value: p.useAdg ? 'Yes' : 'No' },
+                                                { label: 'Enhance', value: p.enhance ? 'Yes' : 'No' },
+                                                ...(p.referenceAudioUrl ? [{ label: 'Reference Audio', value: p.referenceAudioTitle || 'Yes' }] : []),
+                                                ...(p.sourceAudioUrl ? [{ label: 'Source Audio', value: p.sourceAudioTitle || 'Yes' }] : []),
+                                                ...(p.taskType && p.taskType !== 'text2music' ? [{ label: 'Task Type', value: p.taskType }] : []),
+                                                ...(p.cfgIntervalStart != null ? [{ label: 'CFG Interval', value: `${p.cfgIntervalStart} - ${p.cfgIntervalEnd}` }] : []),
+                                                ...(p.customTimesteps ? [{ label: 'Custom Timesteps', value: p.customTimesteps }] : []),
+                                            ],
+                                        },
+                                    ];
+                                    return (
+                                        <div className="px-4 pb-4 space-y-3">
+                                            {sections.map((section) => {
+                                                // Filter out items with no meaningful value
+                                                const visibleItems = section.items.filter(item => item.value !== undefined && item.value !== '' && item.value !== null);
+                                                if (visibleItems.length === 0) return null;
+                                                return (
+                                                    <div key={section.title}>
+                                                        <div className="text-[11px] font-bold text-zinc-400 dark:text-zinc-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                                            <span>{section.icon}</span>
+                                                            {section.title}
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                                                            {visibleItems.map((item) => (
+                                                                <div key={item.label} className="flex items-center justify-between py-0.5">
+                                                                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{item.label}</span>
+                                                                    <span className="text-[11px] font-medium text-zinc-900 dark:text-zinc-200 text-right max-w-[140px] truncate" title={String(item.value)}>
+                                                                        {String(item.value)}
+                                                                    </span>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         )}
                     </div>

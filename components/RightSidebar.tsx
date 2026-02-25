@@ -7,6 +7,7 @@ import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
+import { GenerationConfigModal } from './GenerationConfigModal';
 
 interface RightSidebarProps {
     song: Song | null;
@@ -38,6 +39,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
     const [titleDraft, setTitleDraft] = useState('');
     const [titleError, setTitleError] = useState<string | null>(null);
     const [isSavingTitle, setIsSavingTitle] = useState(false);
+    const [configOpen, setConfigOpen] = useState(false);
 
     useEffect(() => {
         if (song) {
@@ -129,7 +131,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
         <div className="w-full h-full bg-zinc-50 dark:bg-suno-panel flex flex-col border-l border-zinc-200 dark:border-white/5 relative transition-colors duration-300">
 
             {/* Header */}
-            <div className="h-14 flex items-center justify-between px-4 border-b border-zinc-200 dark:border-white/5 flex-shrink-0 bg-zinc-50/50 dark:bg-suno-panel/50 backdrop-blur-md z-10">
+            <div className="h-14 flex items-center justify-between px-4 border-b border-zinc-200 dark:border-white/5 flex-shrink-0 bg-zinc-50 dark:bg-suno-panel z-10">
                 <span className="font-semibold text-sm text-zinc-900 dark:text-white">{t('songDetails')}</span>
                 <button
                     onClick={onClose}
@@ -267,6 +269,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                     onDelete={() => onDelete?.(song)}
                                     onAddToPlaylist={() => onAddToPlaylist?.(song)}
                                     onShare={() => setShareModalOpen(true)}
+                                    onViewConfig={() => setConfigOpen(true)}
                                 />
                             </div>
                         </div>
@@ -288,11 +291,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                     </div>
 
                     {/* Main Actions */}
-                    <div className="flex items-center justify-between px-3 py-2.5 bg-zinc-200/80 dark:bg-black/40 backdrop-blur-sm rounded-2xl border border-zinc-300/50 dark:border-white/5">
+                    <div className="flex items-center justify-between px-3 py-2.5 bg-zinc-200 dark:bg-black/40 rounded-2xl border border-zinc-300/50 dark:border-white/5">
                         <button
                             onClick={onOpenVideo}
                             title={t('createVideo')}
-                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
+                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-colors duration-150"
                         >
                             <Video size={18} strokeWidth={1.5} />
                         </button>
@@ -303,14 +306,14 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                 window.open(`/editor?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
                             }}
                             title={t('openInEditor')}
-                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
+                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-colors duration-150"
                         >
                             <Edit3 size={18} strokeWidth={1.5} />
                         </button>
                         <button
                             onClick={() => onReuse && onReuse(song)}
                             title={t('reusePrompt')}
-                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
+                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-colors duration-150"
                         >
                             <Repeat size={18} strokeWidth={1.5} />
                         </button>
@@ -324,7 +327,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                 window.open(`${baseUrl}/demucs-web/?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
                             }}
                             title={t('extractStems')}
-                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-all duration-200"
+                            className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-colors duration-150"
                         >
                             <Layers size={18} strokeWidth={1.5} />
                         </button>
@@ -540,6 +543,14 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                     isOpen={shareModalOpen}
                     onClose={() => setShareModalOpen(false)}
                     song={song}
+                />
+            )}
+            {configOpen && (
+                <GenerationConfigModal
+                    song={song}
+                    token={token}
+                    isOpen={configOpen}
+                    onClose={() => setConfigOpen(false)}
                 />
             )}
         </div>

@@ -10,6 +10,8 @@ import { VideoGeneratorModal } from './components/VideoGeneratorModal';
 import { UsernameModal } from './components/UsernameModal';
 import { UserProfile } from './components/UserProfile';
 import { SettingsModal } from './components/SettingsModal';
+import { PrepareTrainingModal } from './components/PrepareTrainingModal';
+import { EditMetadataModal } from './components/EditMetadataModal';
 import { SongProfile } from './components/SongProfile';
 import { Song, GenerationParams, View, Playlist } from './types';
 import { generateApi, songsApi, playlistsApi, getAudioUrl } from './services/api';
@@ -35,7 +37,8 @@ function AppContent() {
   // Auth
   const { user, token, isAuthenticated, isLoading: authLoading, setupUser, logout } = useAuth();
   const [showUsernameModal, setShowUsernameModal] = useState(false);
-  // Track multiple concurrent generation jobs
+  // Track multiple concurrent generation jobs (max 4)
+  const MAX_CONCURRENT_JOBS = 4;
   const activeJobsRef = useRef<Map<string, { tempId: string; pollInterval: ReturnType<typeof setInterval> }>>(new Map());
   const [activeJobCount, setActiveJobCount] = useState(0);
 
@@ -53,6 +56,12 @@ function AppContent() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [likedSongIds, setLikedSongIds] = useState<Set<string>>(new Set());
+  const [playedSongIds, setPlayedSongIds] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('playedSongIds');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
   const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
   const [playQueue, setPlayQueue] = useState<Song[]>([]);
   const [queueIndex, setQueueIndex] = useState(-1);
@@ -94,6 +103,12 @@ function AppContent() {
 
   // Settings Modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  // Prepare Training Modal
+  const [prepareTrainingSong, setPrepareTrainingSong] = useState<Song | null>(null);
+
+  // Edit Metadata Modal
+  const [editMetadataSong, setEditMetadataSong] = useState<Song | null>(null);
 
   // Profile View
   const [viewingUsername, setViewingUsername] = useState<string | null>(null);
@@ -769,6 +784,11 @@ function AppContent() {
       return;
     }
 
+    if (activeJobsRef.current.size >= MAX_CONCURRENT_JOBS) {
+      showToast('Maximum 4 concurrent generations. Wait for one to finish.', 'error');
+      return;
+    }
+
     setIsGenerating(true);
     setCurrentView('create');
     setMobileShowList(false);
@@ -848,6 +868,13 @@ function AppContent() {
         trackName: params.trackName,
         completeTrackClasses: params.completeTrackClasses,
         isFormatCaption: params.isFormatCaption,
+        loraLoaded: params.loraLoaded,
+        loraPath: params.loraPath,
+        loraName: params.loraName,
+        loraScale: params.loraScale,
+        loraEnabled: params.loraEnabled,
+        loraTriggerTag: params.loraTriggerTag,
+        loraTagPosition: params.loraTagPosition,
       }, token);
 
       beginPollingJob(job.jobId, tempId);
@@ -950,6 +977,15 @@ function AppContent() {
       setIsPlaying(true);
       setSongs(prev => prev.map(s => s.id === song.id ? updatedSong : s));
       songsApi.trackPlay(song.id, token).catch(err => console.error('Failed to track play:', err));
+      // Track as played
+      if (!song.id.startsWith('temp_')) {
+        setPlayedSongIds(prev => {
+          const next = new Set(prev);
+          next.add(song.id);
+          try { localStorage.setItem('playedSongIds', JSON.stringify([...next])); } catch {}
+          return next;
+        });
+      }
     } else {
       togglePlay();
     }
@@ -1159,6 +1195,9 @@ function AppContent() {
 
   const handleCoverSong = (song: Song) => {
     if (!song.audioUrl) return;
+    // Load lyrics + style + params from source song
+    setReuseData({ song, timestamp: Date.now() });
+    // Set source audio for cover mode (applyAudioTargetUrl will auto-set taskType to 'cover')
     setPendingAudioSelection({ target: 'source', url: song.audioUrl, title: song.title });
     setCurrentView('create');
     setMobileShowList(false);
@@ -1307,10 +1346,13 @@ function AppContent() {
               <CreatePanel
                 onGenerate={handleGenerate}
                 isGenerating={isGenerating}
+                activeJobCount={activeJobCount}
+                maxConcurrentJobs={MAX_CONCURRENT_JOBS}
                 initialData={reuseData}
                 createdSongs={songs}
                 pendingAudioSelection={pendingAudioSelection}
                 onAudioSelectionApplied={() => setPendingAudioSelection(null)}
+                onPrepareTraining={(song: Song) => setPrepareTrainingSong(song)}
               />
             </div>
 
@@ -1324,6 +1366,7 @@ function AppContent() {
                 currentSong={currentSong}
                 selectedSong={selectedSong}
                 likedSongIds={likedSongIds}
+                playedSongIds={playedSongIds}
                 isPlaying={isPlaying}
                 referenceTracks={referenceTracks}
                 onPlay={playSong}
@@ -1341,6 +1384,8 @@ function AppContent() {
                 onDeleteMany={handleDeleteSongs}
                 onUseAsReference={handleUseAsReference}
                 onCoverSong={handleCoverSong}
+                onPrepareTraining={(song: Song) => setPrepareTrainingSong(song)}
+                onEditMetadata={(song: Song) => setEditMetadataSong(song)}
                 onUseUploadAsReference={handleUseUploadAsReference}
                 onCoverUpload={handleCoverUpload}
                 onSongUpdate={handleSongUpdate}
@@ -1482,6 +1527,26 @@ function AppContent() {
         onToggleTheme={toggleTheme}
         onNavigateToProfile={handleNavigateToProfile}
       />
+      {prepareTrainingSong && (
+        <PrepareTrainingModal
+          song={prepareTrainingSong}
+          onClose={() => setPrepareTrainingSong(null)}
+        />
+      )}
+
+      {editMetadataSong && (
+        <EditMetadataModal
+          song={editMetadataSong}
+          isOpen={!!editMetadataSong}
+          onClose={() => setEditMetadataSong(null)}
+          onSaved={(updated) => {
+            setSongs(prev => prev.map(s => s.id === editMetadataSong.id ? { ...s, ...updated } : s));
+            if (selectedSong?.id === editMetadataSong.id) {
+              setSelectedSong(prev => prev ? { ...prev, ...updated } : prev);
+            }
+          }}
+        />
+      )}
 
       {/* Mobile Details Modal */}
       {showMobileDetails && selectedSong && (

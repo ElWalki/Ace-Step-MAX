@@ -867,4 +867,584 @@ router.post('/import-dataset', authMiddleware, async (req: AuthenticatedRequest,
   }
 });
 
+// ================== DATASET PREPARATION FROM UI ==================
+
+// POST /api/training/trim-audio — Trim an audio file using ffmpeg
+router.post('/trim-audio', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioPath, startTime, endTime, outputDir } = req.body;
+    if (!audioPath) {
+      res.status(400).json({ error: 'audioPath is required' });
+      return;
+    }
+
+    const aceStepDir = getAceStepDir();
+
+    // Resolve audio path (could be a local /audio/ URL or absolute path)
+    let resolvedAudio = audioPath;
+    if (audioPath.startsWith('/audio/')) {
+      resolvedAudio = path.join(__dirname, '../../public', audioPath);
+    } else if (!path.isAbsolute(audioPath)) {
+      resolvedAudio = path.resolve(aceStepDir, audioPath);
+    }
+
+    if (!existsSync(resolvedAudio)) {
+      res.status(404).json({ error: `Audio file not found: ${audioPath}` });
+      return;
+    }
+
+    // If no trim needed, just return the original path
+    if ((startTime === undefined || startTime <= 0) && (endTime === undefined || endTime <= 0)) {
+      res.json({ trimmedPath: resolvedAudio, trimmed: false });
+      return;
+    }
+
+    // Build output path
+    const trimDir = outputDir || path.join(config.datasets.uploadsDir, '_trimmed');
+    await mkdir(trimDir, { recursive: true });
+    const ext = path.extname(resolvedAudio);
+    const baseName = path.basename(resolvedAudio, ext);
+    const trimmedName = `${baseName}_trim_${Math.round(startTime || 0)}s-${Math.round(endTime || 0)}s${ext}`;
+    const trimmedPath = path.join(trimDir, trimmedName);
+
+    // Build ffmpeg command
+    const ffmpegArgs: string[] = ['-y', '-i', resolvedAudio];
+    if (startTime !== undefined && startTime > 0) {
+      ffmpegArgs.push('-ss', String(startTime));
+    }
+    if (endTime !== undefined && endTime > 0) {
+      ffmpegArgs.push('-to', String(endTime));
+    }
+    ffmpegArgs.push('-c', 'copy', trimmedPath);
+
+    execSync(`ffmpeg ${ffmpegArgs.map(a => `"${a}"`).join(' ')}`, { timeout: 30000 });
+
+    const duration = getAudioDuration(trimmedPath);
+    res.json({ trimmedPath, duration, trimmed: true });
+  } catch (error) {
+    console.error('[Training] Trim audio error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Trim failed' });
+  }
+});
+
+// POST /api/training/convert-to-codes — Convert audio to LM codes via Gradio
+router.post('/convert-to-codes', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioPath } = req.body;
+    if (!audioPath) {
+      res.status(400).json({ error: 'audioPath is required' });
+      return;
+    }
+
+    const aceStepDir = getAceStepDir();
+    let resolvedAudio = audioPath;
+    if (audioPath.startsWith('/audio/')) {
+      resolvedAudio = path.join(__dirname, '../../public', audioPath);
+    } else if (!path.isAbsolute(audioPath)) {
+      resolvedAudio = path.resolve(aceStepDir, audioPath);
+    }
+
+    if (!existsSync(resolvedAudio)) {
+      res.status(404).json({ error: `Audio file not found: ${audioPath}` });
+      return;
+    }
+
+    // Try Gradio first
+    try {
+      const client = await getGradioClient();
+      const result = await client.predict('/convert_src_audio_to_codes_wrapper', [
+        { path: resolvedAudio, orig_name: path.basename(resolvedAudio) },
+      ]);
+      const codes = (result.data as unknown[])[0] as string;
+      res.json({ codes, source: 'gradio' });
+      return;
+    } catch (gradioError) {
+      // Gradio endpoint not available — try Python fallback
+      console.warn('[Training] Gradio convert-to-codes failed, trying Python fallback:', gradioError instanceof Error ? gradioError.message : gradioError);
+    }
+
+    // Python fallback: spawn a script that loads the model and converts
+    const scriptPath = path.resolve(__dirname, '../../scripts/convert_to_codes.py');
+    if (!existsSync(scriptPath)) {
+      res.status(501).json({
+        error: 'Convert to codes requires the Gradio service running, or the convert_to_codes.py script.',
+        hint: 'Start the ACE-Step Gradio server or use the Gradio UI directly.',
+      });
+      return;
+    }
+
+    const pythonPath = resolvePythonPath(aceStepDir);
+    const child = spawn(pythonPath, [scriptPath, '--audio', resolvedAudio, '--json'], {
+      cwd: aceStepDir,
+      env: { ...process.env },
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+    child.on('close', (code: number | null) => {
+      if (code === 0) {
+        try {
+          const result = JSON.parse(stdout.trim().split('\n').pop() || '{}');
+          res.json({ codes: result.codes || stdout.trim(), source: 'python' });
+        } catch {
+          res.json({ codes: stdout.trim(), source: 'python' });
+        }
+      } else {
+        res.status(500).json({ error: 'Conversion failed', stderr: stderr.trim() });
+      }
+    });
+  } catch (error) {
+    console.error('[Training] Convert to codes error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Conversion failed' });
+  }
+});
+
+// POST /api/training/add-to-dataset — Add a single sample to a dataset JSON
+router.post('/add-to-dataset', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const {
+      audioPath,
+      datasetName = 'my_lora_dataset',
+      caption = '',
+      genre = '',
+      lyrics = '[Instrumental]',
+      bpm = null,
+      keyscale = '',
+      timesignature = '',
+      duration = 0,
+      language = 'instrumental',
+      isInstrumental = true,
+      customTag = '',
+      trimStart,
+      trimEnd,
+    } = req.body;
+
+    if (!audioPath) {
+      res.status(400).json({ error: 'audioPath is required' });
+      return;
+    }
+
+    const aceStepDir = getAceStepDir();
+
+    // Resolve the audio file path
+    let resolvedAudio = audioPath;
+    if (audioPath.startsWith('/audio/')) {
+      resolvedAudio = path.join(__dirname, '../../public', audioPath);
+    } else if (!path.isAbsolute(audioPath)) {
+      resolvedAudio = path.resolve(aceStepDir, audioPath);
+    }
+
+    if (!existsSync(resolvedAudio)) {
+      res.status(404).json({ error: `Audio file not found: ${audioPath}` });
+      return;
+    }
+
+    // If trimming is requested, trim first
+    let finalAudioPath = resolvedAudio;
+    if ((trimStart !== undefined && trimStart > 0) || (trimEnd !== undefined && trimEnd > 0)) {
+      const trimDir = path.join(config.datasets.uploadsDir, datasetName);
+      await mkdir(trimDir, { recursive: true });
+      const ext = path.extname(resolvedAudio);
+      const baseName = path.basename(resolvedAudio, ext);
+      const trimmedName = `${baseName}_trim${ext}`;
+      const trimmedPath = path.join(trimDir, trimmedName);
+
+      const ffmpegArgs: string[] = ['-y', '-i', resolvedAudio];
+      if (trimStart > 0) ffmpegArgs.push('-ss', String(trimStart));
+      if (trimEnd > 0) ffmpegArgs.push('-to', String(trimEnd));
+      ffmpegArgs.push('-c', 'copy', trimmedPath);
+      execSync(`ffmpeg ${ffmpegArgs.map(a => `"${a}"`).join(' ')}`, { timeout: 30000 });
+      finalAudioPath = trimmedPath;
+    }
+
+    // Also copy the audio to the dataset uploads directory if it's not already there
+    const datasetAudioDir = path.join(config.datasets.uploadsDir, datasetName);
+    await mkdir(datasetAudioDir, { recursive: true });
+    const destFilename = path.basename(finalAudioPath);
+    const destPath = path.join(datasetAudioDir, destFilename);
+    if (finalAudioPath !== destPath) {
+      const { copyFile } = await import('fs/promises');
+      await copyFile(finalAudioPath, destPath);
+      finalAudioPath = destPath;
+    }
+
+    // Load or create dataset JSON
+    const datasetDir = config.datasets.dir;
+    await mkdir(datasetDir, { recursive: true });
+    const jsonPath = path.join(datasetDir, `${datasetName}.json`);
+
+    let dataset: { metadata: Record<string, unknown>; samples: Record<string, unknown>[] };
+    if (existsSync(jsonPath)) {
+      const raw = await readFile(jsonPath, 'utf-8');
+      dataset = JSON.parse(raw);
+    } else {
+      dataset = {
+        metadata: {
+          name: datasetName,
+          custom_tag: customTag,
+          tag_position: 'prepend',
+          created_at: new Date().toISOString(),
+          num_samples: 0,
+          all_instrumental: false,
+          genre_ratio: 0,
+        },
+        samples: [],
+      };
+    }
+
+    // Compute actual duration
+    const actualDuration = duration > 0 ? duration : getAudioDuration(finalAudioPath);
+
+    // Create sample entry
+    const sampleId = randomUUID().slice(0, 8);
+    const sample = {
+      id: sampleId,
+      audio_path: finalAudioPath,
+      filename: destFilename,
+      caption,
+      genre,
+      lyrics: isInstrumental ? '[Instrumental]' : lyrics,
+      raw_lyrics: lyrics,
+      formatted_lyrics: '',
+      bpm,
+      keyscale,
+      timesignature,
+      duration: actualDuration,
+      language: isInstrumental ? 'instrumental' : language,
+      is_instrumental: isInstrumental,
+      custom_tag: customTag,
+      labeled: !!(caption || genre || (!isInstrumental && lyrics)),
+      prompt_override: null,
+    };
+
+    dataset.samples.push(sample);
+    (dataset.metadata as any).num_samples = dataset.samples.length;
+
+    // Save dataset JSON
+    await writeFile(jsonPath, JSON.stringify(dataset, null, 2), 'utf-8');
+
+    // Also save lyrics as companion .txt file
+    if (lyrics && !isInstrumental) {
+      const lyricsPath = path.join(datasetAudioDir, `${path.basename(destFilename, path.extname(destFilename))}.txt`);
+      await writeFile(lyricsPath, lyrics, 'utf-8');
+    }
+
+    res.json({
+      status: `Added sample to dataset "${datasetName}" (${dataset.samples.length} total)`,
+      sampleId,
+      sampleCount: dataset.samples.length,
+      datasetPath: jsonPath,
+      audioPath: finalAudioPath,
+    });
+  } catch (error) {
+    console.error('[Training] Add to dataset error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to add sample' });
+  }
+});
+
+// GET /api/training/datasets — List available dataset JSON files
+router.get('/datasets', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const datasetDir = config.datasets.dir;
+    if (!existsSync(datasetDir)) {
+      res.json({ datasets: [] });
+      return;
+    }
+    const entries = readdirSync(datasetDir);
+    const datasets = entries
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        try {
+          const raw = readFileSync(path.join(datasetDir, f), 'utf-8');
+          const data = JSON.parse(raw);
+          return {
+            name: data.metadata?.name || path.basename(f, '.json'),
+            filename: f,
+            path: path.join(datasetDir, f),
+            sampleCount: data.samples?.length || 0,
+            createdAt: data.metadata?.created_at,
+          };
+        } catch {
+          return { name: path.basename(f, '.json'), filename: f, path: path.join(datasetDir, f), sampleCount: 0 };
+        }
+      });
+    res.json({ datasets });
+  } catch (error) {
+    console.error('[Training] List datasets error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list datasets' });
+  }
+});
+
+// POST /api/training/auto-label-single — AI auto-label a single audio file
+// Uses the Gradio understand_audio_from_codes endpoint to detect genre, caption, BPM, key, etc.
+router.post('/auto-label-single', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioPath, transcribeLyrics = true } = req.body;
+    if (!audioPath) {
+      res.status(400).json({ error: 'audioPath is required' });
+      return;
+    }
+
+    // Resolve audio path
+    let resolvedPath = audioPath;
+    if (audioPath.startsWith('/api/audio/')) {
+      const uploadsDir = path.resolve(process.cwd(), '..', 'uploads');
+      resolvedPath = path.join(uploadsDir, path.basename(audioPath));
+    } else if (audioPath.startsWith('/output/') || audioPath.startsWith('/api/output/')) {
+      const outputDir = path.resolve(process.cwd(), '..', 'output');
+      const filename = path.basename(audioPath);
+      resolvedPath = path.join(outputDir, filename);
+    }
+
+    if (!existsSync(resolvedPath)) {
+      res.status(404).json({ error: `Audio file not found: ${resolvedPath}` });
+      return;
+    }
+
+    const client = await getGradioClient();
+
+    // Step 1: Convert audio to codes using the Gradio endpoint
+    let audioCodes = '';
+    try {
+      const codesResult = await client.predict('/convert_src_audio_to_codes', [
+        { path: resolvedPath, orig_name: path.basename(resolvedPath) },
+      ]);
+      const codesData = codesResult.data as unknown[];
+      audioCodes = (codesData[0] as string) || '';
+    } catch {
+      // Try alternate endpoint name
+      try {
+        const codesResult = await client.predict('/convert_src_audio_to_codes_wrapper', [
+          { path: resolvedPath, orig_name: path.basename(resolvedPath) },
+        ]);
+        const codesData = codesResult.data as unknown[];
+        audioCodes = (codesData[0] as string) || '';
+      } catch (e2) {
+        res.status(501).json({
+          error: 'Failed to convert audio to codes via Gradio.',
+          hint: 'Ensure the model is initialized in the Gradio service.',
+          details: e2 instanceof Error ? e2.message : String(e2),
+        });
+        return;
+      }
+    }
+
+    if (!audioCodes || audioCodes.startsWith('❌')) {
+      res.status(500).json({ error: audioCodes || 'Failed to encode audio to codes' });
+      return;
+    }
+
+    // Step 2: Use LLM to understand the audio from codes
+    try {
+      const labelResult = await client.predict('/understand_audio', [
+        audioCodes,
+        transcribeLyrics,
+        0.7,  // temperature
+        true, // use_constrained_decoding
+      ]);
+      const labelData = labelResult.data as unknown[];
+      // The understand_audio endpoint typically returns metadata as a JSON string or dict
+      const rawResult = labelData[0];
+      let metadata: Record<string, unknown> = {};
+      
+      if (typeof rawResult === 'string') {
+        try {
+          metadata = JSON.parse(rawResult);
+        } catch {
+          // If it's not JSON, try to parse the status text
+          metadata = { raw: rawResult };
+        }
+      } else if (typeof rawResult === 'object' && rawResult !== null) {
+        metadata = rawResult as Record<string, unknown>;
+      }
+
+      res.json({
+        success: true,
+        metadata: {
+          caption: metadata.caption || '',
+          genre: metadata.genres || metadata.genre || '',
+          bpm: metadata.bpm || null,
+          key: metadata.keyscale || metadata.key || '',
+          timeSignature: metadata.timesignature || metadata.time_signature || '',
+          language: metadata.vocal_language || metadata.language || '',
+          lyrics: metadata.lyrics || '',
+          instrumental: metadata.instrumental || false,
+        },
+        audioCodes,
+      });
+    } catch (labelError) {
+      // Try alternate endpoint
+      try {
+        const labelResult = await client.predict('/understand_audio_from_codes_wrapper', [
+          audioCodes,
+          transcribeLyrics,
+        ]);
+        const labelData = labelResult.data as unknown[];
+        const rawResult = labelData[0];
+        let metadata: Record<string, unknown> = {};
+
+        if (typeof rawResult === 'string') {
+          try { metadata = JSON.parse(rawResult); } catch { metadata = { raw: rawResult }; }
+        } else if (typeof rawResult === 'object' && rawResult !== null) {
+          metadata = rawResult as Record<string, unknown>;
+        }
+
+        res.json({
+          success: true,
+          metadata: {
+            caption: metadata.caption || '',
+            genre: metadata.genres || metadata.genre || '',
+            bpm: metadata.bpm || null,
+            key: metadata.keyscale || metadata.key || '',
+            timeSignature: metadata.timesignature || metadata.time_signature || '',
+            language: metadata.vocal_language || metadata.language || '',
+            lyrics: metadata.lyrics || '',
+            instrumental: metadata.instrumental || false,
+          },
+          audioCodes,
+        });
+      } catch (e2) {
+        res.status(501).json({
+          error: 'Auto-labeling requires the LLM to be initialized.',
+          hint: 'Initialize the model with LLM enabled in the Gradio service configuration.',
+          details: e2 instanceof Error ? e2.message : String(e2),
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[Training] Auto-label-single error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Auto-label failed' });
+  }
+});
+
+// POST /api/training/separate-stems — Separate audio into vocal + instrumental using Demucs
+router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioPath, quality = 'alta' } = req.body;
+
+    if (!audioPath || typeof audioPath !== 'string') {
+      res.status(400).json({ error: 'audioPath is required' });
+      return;
+    }
+
+    const aceStepDir = getAceStepDir();
+
+    // Resolve audio path
+    let resolvedAudio = audioPath;
+    if (audioPath.startsWith('/audio/')) {
+      resolvedAudio = path.join(__dirname, '../../public', audioPath);
+    } else if (!path.isAbsolute(audioPath)) {
+      resolvedAudio = path.resolve(aceStepDir, audioPath);
+    }
+
+    if (!existsSync(resolvedAudio)) {
+      res.status(404).json({ error: `Audio file not found: ${audioPath}` });
+      return;
+    }
+
+    // Output directory for separated stems
+    const stemsDir = path.join(__dirname, '../../public/audio/stems');
+    await mkdir(stemsDir, { recursive: true });
+
+    const scriptPath = path.resolve(__dirname, '../../scripts/separate_audio.py');
+    if (!existsSync(scriptPath)) {
+      res.status(500).json({ error: 'separate_audio.py script not found' });
+      return;
+    }
+
+    const pythonPath = resolvePythonPath(aceStepDir);
+
+    // Validate quality parameter
+    const validQualities = ['rapida', 'alta', 'maxima'];
+    const safeQuality = validQualities.includes(quality) ? quality : 'alta';
+
+    console.log(`[Training] Separating stems: ${resolvedAudio} (quality: ${safeQuality})`);
+
+    const child = spawn(pythonPath, [
+      scriptPath,
+      '--audio', resolvedAudio,
+      '--output', stemsDir,
+      '--quality', safeQuality,
+      '--json',
+    ], {
+      cwd: aceStepDir,
+      env: { ...process.env },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => {
+      const text = data.toString();
+      stdout += text;
+      // Log progress lines (non-JSON) for monitoring
+      const lines = text.split('\n').filter((l: string) => l.trim());
+      for (const line of lines) {
+        if (!line.startsWith('{')) {
+          console.log(`[Demucs] ${line}`);
+        }
+      }
+    });
+
+    child.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    child.on('close', (code: number | null) => {
+      if (code !== 0) {
+        console.error(`[Training] Demucs exited with code ${code}:`, stderr);
+        res.status(500).json({ error: `Separation failed (exit code ${code})`, details: stderr.slice(-500) });
+        return;
+      }
+
+      // Parse JSON from last line of stdout
+      try {
+        const lines = stdout.trim().split('\n');
+        const jsonLine = lines[lines.length - 1];
+        const result = JSON.parse(jsonLine);
+
+        if (!result.success) {
+          res.status(500).json({ error: result.error || 'Separation failed' });
+          return;
+        }
+
+        // Convert absolute paths to relative URLs for the frontend
+        const vocalsFilename = path.basename(result.vocals_path);
+        const instrumentalFilename = path.basename(result.instrumental_path);
+
+        res.json({
+          success: true,
+          vocals: {
+            url: `/audio/stems/${vocalsFilename}`,
+            path: result.vocals_path,
+            filename: vocalsFilename,
+          },
+          instrumental: {
+            url: `/audio/stems/${instrumentalFilename}`,
+            path: result.instrumental_path,
+            filename: instrumentalFilename,
+          },
+          duration: result.duration,
+          elapsed: result.elapsed_seconds,
+        });
+      } catch (parseErr) {
+        console.error('[Training] Failed to parse Demucs output:', stdout);
+        res.status(500).json({ error: 'Failed to parse separation result' });
+      }
+    });
+
+    child.on('error', (err: Error) => {
+      console.error('[Training] Failed to spawn Demucs:', err);
+      res.status(500).json({ error: `Failed to start separator: ${err.message}` });
+    });
+
+  } catch (error) {
+    console.error('[Training] Separate-stems error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Separation failed' });
+  }
+});
+
 export default router;

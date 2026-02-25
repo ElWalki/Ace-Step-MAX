@@ -42,7 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Sidebar */}
       <div className={`
-        flex flex-col h-full bg-white dark:bg-suno-sidebar border-r border-zinc-200 dark:border-white/5 flex-shrink-0 py-4 overflow-y-auto scrollbar-hide transition-all duration-300
+        flex flex-col h-full bg-white dark:bg-suno-sidebar border-r border-zinc-200 dark:border-white/5 flex-shrink-0 py-4 overflow-y-auto scrollbar-hide transition-[width] duration-300
         fixed left-0 top-0 z-50 md:relative
         ${isOpen ? 'w-[200px]' : 'w-[72px]'}
       `}>
@@ -61,7 +61,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </svg>
           </div>
           {isOpen && (
-            <span className="text-lg font-bold text-zinc-900 dark:text-white whitespace-nowrap">ACE Step</span>
+            <span className="text-lg font-bold text-zinc-900 dark:text-white whitespace-nowrap">ACE Step MAX <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500">V0.1.0</span></span>
           )}
         </div>
         {/* Collapse/Expand Button */}
@@ -124,7 +124,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <button
             onClick={onToggleTheme}
             className={`
-              w-full rounded-xl flex items-center gap-3 transition-all duration-200 text-zinc-500 dark:text-zinc-400 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5
+              w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 dark:text-zinc-400 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5
               ${isOpen ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
             `}
             title={theme === 'dark' ? t('lightMode') : t('darkMode')}
@@ -143,7 +143,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onOpenSettings}
                 className={`
-                  w-full rounded-xl flex items-center gap-3 transition-all duration-200 text-zinc-500 dark:text-zinc-400 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5
+                  w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 dark:text-zinc-400 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5
                   ${isOpen ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
                 `}
                 title={`${user.username} - ${t('settings')}`}
@@ -165,7 +165,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <button
                 onClick={onLogout}
                 className={`
-                  w-full rounded-xl flex items-center gap-3 transition-all duration-200 text-zinc-500 hover:text-red-500 hover:bg-red-500/10
+                  w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 hover:text-red-500 hover:bg-red-500/10
                   ${isOpen ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
                 `}
                 title={t('signOut')}
@@ -180,7 +180,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={onLogin}
               className={`
-                w-full rounded-xl flex items-center gap-3 transition-all duration-200 text-zinc-500 dark:text-zinc-400 hover:text-pink-500 hover:bg-zinc-100 dark:hover:bg-white/5
+                w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 dark:text-zinc-400 hover:text-pink-500 hover:bg-zinc-100 dark:hover:bg-white/5
                 ${isOpen ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
               `}
               title={t('signIn')}
@@ -210,7 +210,7 @@ const NavItem: React.FC<NavItemProps> = ({ icon, label, active, onClick, isExpan
   <button
     onClick={onClick}
     className={`
-      w-full rounded-xl flex items-center gap-3 transition-all duration-200 group relative overflow-hidden
+      w-full rounded-xl flex items-center gap-3 transition-colors duration-150 group relative overflow-hidden
       ${isExpanded ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
       ${active ? 'bg-zinc-100 dark:bg-white/10 text-black dark:text-white' : 'text-zinc-500 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5'}
     `}

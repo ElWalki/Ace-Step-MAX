@@ -308,6 +308,12 @@ export interface GenerationParams {
   completeTrackClasses?: string[];
   isFormatCaption?: boolean;
   loraLoaded?: boolean;
+  loraPath?: string;
+  loraName?: string;
+  loraScale?: number;
+  loraEnabled?: boolean;
+  loraTriggerTag?: string;
+  loraTagPosition?: string;
 }
 
 export interface GenerationJob {
@@ -392,6 +398,7 @@ export const generateApi = {
   }, token: string): Promise<{
     message: string;
     lora_path: string;
+    trigger_tag?: string;
   }> => api('/api/lora/load', { method: 'POST', body: params, token }),
 
   unloadLora: (token: string): Promise<{
@@ -417,7 +424,55 @@ export const generateApi = {
     active: boolean;
     scale: number;
     path: string;
+    trigger_tag: string;
+    tag_position: string;
+    name: string;
+    rank: number;
+    alpha: number;
   }> => api('/api/lora/status', { token }),
+
+  setTagPosition: (params: {
+    tag_position: string;
+  }, token: string): Promise<{
+    message: string;
+    tag_position: string;
+  }> => api('/api/lora/tag-position', { method: 'POST', body: params, token }),
+
+  browseLora: (params: {
+    dirPath?: string;
+  }, token: string): Promise<{
+    currentPath: string;
+    relativePath?: string;
+    parentPath: string;
+    entries: { name: string; type: 'dir' | 'file'; fullPath: string; isAdapter: boolean }[];
+    error?: string;
+  }> => api('/api/lora/browse', { method: 'POST', body: params, token }),
+
+  listLoras: (token: string): Promise<{
+    loras: {
+      name: string;
+      source: 'library' | 'output';
+      sourceDir: string;
+      variants: { label: string; path: string; epoch?: number }[];
+      metadata?: { trigger_tag?: string; tag_position?: string; description?: string; [key: string]: unknown };
+      baseModel?: string;
+    }[];
+  }> => api('/api/lora/list', { token }),
+
+  // Model download
+  downloadModel: (params: {
+    modelName: string;
+  }, token: string): Promise<{
+    status: string;
+    message: string;
+  }> => api('/api/generate/models/download', { method: 'POST', body: params, token }),
+
+  getDownloadStatus: (modelName: string, token: string): Promise<{
+    status: 'downloading' | 'done' | 'error' | 'idle';
+    progress?: string;
+    error?: string;
+    message?: string;
+  }> => api(`/api/generate/models/download/${encodeURIComponent(modelName)}`, { token }),
 };
 
 // Users API
@@ -791,4 +846,79 @@ export const trainingApi = {
 
   importDataset: (datasetType: string, token: string): Promise<{ status: string }> =>
     api('/api/training/import-dataset', { method: 'POST', body: { datasetType }, token }),
+
+  // Add a single sample to a dataset (from UI "Prepare for Training")
+  addToDataset: (params: {
+    audioPath: string;
+    datasetName?: string;
+    caption?: string;
+    genre?: string;
+    lyrics?: string;
+    bpm?: number | null;
+    keyscale?: string;
+    timesignature?: string;
+    duration?: number;
+    language?: string;
+    isInstrumental?: boolean;
+    customTag?: string;
+    trimStart?: number;
+    trimEnd?: number;
+  }, token: string): Promise<{
+    status: string;
+    sampleId: string;
+    sampleCount: number;
+    datasetPath: string;
+    audioPath: string;
+  }> => api('/api/training/add-to-dataset', { method: 'POST', body: params, token }),
+
+  // List available dataset JSON files
+  listDatasets: (token: string): Promise<{
+    datasets: Array<{ name: string; filename: string; path: string; sampleCount: number; createdAt?: string }>;
+  }> => api('/api/training/datasets', { token }),
+
+  // Trim audio file using ffmpeg
+  trimAudio: (params: {
+    audioPath: string;
+    startTime?: number;
+    endTime?: number;
+  }, token: string): Promise<{
+    trimmedPath: string;
+    duration?: number;
+    trimmed: boolean;
+  }> => api('/api/training/trim-audio', { method: 'POST', body: params, token }),
+
+  // Convert audio to LM codes (requires Gradio or standalone script)
+  convertToCodes: (audioPath: string, token: string): Promise<{
+    codes: string;
+    source: string;
+    error?: string;
+    hint?: string;
+  }> => api('/api/training/convert-to-codes', { method: 'POST', body: { audioPath }, token }),
+
+  // AI auto-label a single audio file (genre, caption, BPM, key, lyrics, etc.)
+  autoLabelSingle: (audioPath: string, transcribeLyrics: boolean, token: string): Promise<{
+    success: boolean;
+    metadata: {
+      caption: string;
+      genre: string;
+      bpm: number | null;
+      key: string;
+      timeSignature: string;
+      language: string;
+      lyrics: string;
+      instrumental: boolean;
+    };
+    audioCodes: string;
+    error?: string;
+    hint?: string;
+  }> => api('/api/training/auto-label-single', { method: 'POST', body: { audioPath, transcribeLyrics }, token }),
+
+  separateStems: (audioPath: string, quality: 'rapida' | 'alta' | 'maxima' = 'alta', token?: string): Promise<{
+    success: boolean;
+    vocals: { url: string; path: string; filename: string };
+    instrumental: { url: string; path: string; filename: string };
+    duration: number;
+    elapsed: number;
+    error?: string;
+  }> => api('/api/training/separate-stems', { method: 'POST', body: { audioPath, quality }, token }),
 };

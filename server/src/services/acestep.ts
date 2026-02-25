@@ -321,6 +321,7 @@ interface GenerationResult {
   bpm?: number;
   keyScale?: string;
   timeSignature?: string;
+  actualSeed?: number;
   status: string;
 }
 
@@ -482,6 +483,25 @@ async function processGenerationViaGradio(
   });
 
   job.stage = 'Generating music via Gradio...';
+  // If a specific DiT model was requested, ask ACE-Step API to load it first
+  if (params.ditModel) {
+    try {
+      const loadResp = await fetch(`${ACESTEP_API}/v1/models/load`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: params.ditModel }),
+      });
+      const loadJson = await loadResp.json().catch(() => null);
+      if (!loadResp.ok || (loadJson && loadJson.code && loadJson.code !== 200)) {
+        console.warn('[ACE-Step] Failed to load requested DiT model', params.ditModel, loadJson || loadResp.status);
+        // Proceeding may still work if the model was already loaded; do not fail the whole job here.
+      } else {
+        console.log(`[ACE-Step] Requested DiT model loaded: ${params.ditModel}`);
+      }
+    } catch (e) {
+      console.warn('[ACE-Step] Error requesting model load:', e);
+    }
+  }
 
   // predict() blocks until generation is complete
   const result = await client.predict('/generation_wrapper', args);
@@ -500,6 +520,7 @@ async function processGenerationViaGradio(
   const allFiles = data[8]; // list of file objects
   const genDetails = data[9] as string | undefined;
   const genStatus = data[10] as string | undefined;
+  const seedOutput = data[11] as string | number | undefined;
 
   // Collect audio file objects — prefer the "All Generated Files" list
   let audioFileObjects: Array<{ url?: string; path?: string; orig_name?: string }> = [];
@@ -551,6 +572,13 @@ async function processGenerationViaGradio(
     ? actualDuration
     : (metas.duration || params.duration || 60);
 
+  // Parse actual seed from Gradio output
+  let actualSeed: number | undefined;
+  if (seedOutput !== undefined && seedOutput !== null) {
+    const parsed = typeof seedOutput === 'number' ? seedOutput : parseInt(String(seedOutput), 10);
+    if (!isNaN(parsed)) actualSeed = parsed;
+  }
+
   job.status = 'succeeded';
   job.result = {
     audioUrls,
@@ -558,9 +586,10 @@ async function processGenerationViaGradio(
     bpm: metas.bpm || params.bpm,
     keyScale: metas.keyScale || params.keyScale,
     timeSignature: metas.timeSignature || params.timeSignature,
+    actualSeed,
     status: 'succeeded',
   };
-  job.rawResponse = { genDetails, genStatus };
+  job.rawResponse = { genDetails, genStatus, seedOutput };
   console.log(`Job ${jobId}: Completed via Gradio with ${audioUrls.length} audio files`);
 }
 
@@ -647,7 +676,7 @@ async function processGenerationViaPython(
     if (params.audioCodes) args.push('--audio-codes', params.audioCodes);
     if (params.repaintingStart !== undefined && params.repaintingStart > 0) args.push('--repainting-start', String(params.repaintingStart));
     if (params.repaintingEnd !== undefined && params.repaintingEnd > 0) args.push('--repainting-end', String(params.repaintingEnd));
-    if (params.taskType === 'cover' || params.taskType === 'repaint' || params.sourceAudioUrl) {
+    if (params.taskType === 'cover' || params.taskType === 'repaint' || params.sourceAudioUrl || params.referenceAudioUrl) {
       args.push('--audio-cover-strength', String(params.audioCoverStrength ?? 1.0));
     } else if (params.audioCoverStrength !== undefined && params.audioCoverStrength !== 1.0) {
       args.push('--audio-cover-strength', String(params.audioCoverStrength));
@@ -702,6 +731,15 @@ async function processGenerationViaPython(
 
     const finalDuration = actualDuration > 0 ? actualDuration : (params.duration && params.duration > 0 ? params.duration : 60);
 
+    // Extract actual seed from Python result if available
+    let actualSeed: number | undefined;
+    if (result.seed !== undefined) {
+      const parsed = typeof result.seed === 'number' ? result.seed : parseInt(String(result.seed), 10);
+      if (!isNaN(parsed)) actualSeed = parsed;
+    } else if (!params.randomSeed && params.seed !== undefined && params.seed >= 0) {
+      actualSeed = params.seed; // User specified a seed, use it
+    }
+
     job.status = 'succeeded';
     job.result = {
       audioUrls,
@@ -709,6 +747,7 @@ async function processGenerationViaPython(
       bpm: params.bpm,
       keyScale: params.keyScale,
       timeSignature: params.timeSignature,
+      actualSeed,
       status: 'succeeded',
     };
     job.rawResponse = result;
@@ -730,6 +769,7 @@ interface PythonResult {
   success: boolean;
   audio_paths?: string[];
   elapsed_seconds?: number;
+  seed?: number;
   error?: string;
 }
 

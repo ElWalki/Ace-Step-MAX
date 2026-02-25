@@ -3,19 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ACE-Step UI - Local AI Music Generator</title>
+    <title>ACE Step MAX V0.1.0 - Local AI Music Generator</title>
 
     <!-- Primary Meta Tags -->
-    <meta name="title" content="ACE-Step UI - Local AI Music Generator" />
-    <meta name="description" content="Create AI music locally with ACE-Step UI. Free and open source music generation powered by ACE-Step 1.5." />
+    <meta name="title" content="ACE Step MAX V0.1.0 - Local AI Music Generator" />
+    <meta name="description" content="Create AI music locally with ACE Step MAX. Private AI music generation powered by ACE-Step 1.5." />
     <meta name="keywords" content="AI music generator, ACE-Step, local AI, music generation, text to music, AI song generator" />
     <meta name="robots" content="index, follow" />
-    <meta name="author" content="ACE-Step UI" />
+    <meta name="author" content="ACE Step MAX" />
 
     <!-- Additional SEO -->
     <meta name="theme-color" content="#ec4899" />
-    <meta name="application-name" content="ACE-Step UI" />
-    <meta name="apple-mobile-web-app-title" content="ACE-Step UI" />
+    <meta name="application-name" content="ACE Step MAX" />
+    <meta name="apple-mobile-web-app-title" content="ACE Step MAX" />
 
     <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -41,6 +41,7 @@
             },
             animation: {
               'gradient-x': 'gradient-x 15s ease infinite',
+              'unplayed-pulse': 'unplayed-pulse 2.5s ease-in-out infinite',
             },
             keyframes: {
               'gradient-x': {
@@ -101,6 +102,11 @@
         display: none;
       }
 
+      /* Performance: isolate paint/layout in scrollable lists */
+      .custom-scrollbar {
+        contain: layout style;
+      }
+
       .gradient-text {
         background: linear-gradient(to right, #f472b6, #a78bfa, #60a5fa);
         -webkit-background-clip: text;
@@ -115,6 +121,14 @@
 
       .music-bar-anim {
         animation: music-bars 1s ease-in-out infinite;
+      }
+
+      @keyframes unplayed-pulse {
+        0%, 100% { color: #f472b6; opacity: 0.7; }
+        50% { color: #ec4899; opacity: 1; }
+      }
+      .animate-unplayed-pulse {
+        animation: unplayed-pulse 2.5s ease-in-out infinite;
       }
 
       .mobile-only {

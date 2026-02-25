@@ -84,6 +84,14 @@ __pycache__/
 *.py[cod]
 .venv/
 
+# Separated stems output
+server/public/audio/stems/
+!server/public/audio/stems/.gitkeep
+
+# LoRA weights (large binary files)
+lora_library/
+lora_output*/
+
 # Misc
 ComfyUI/
 comfyui/
@@ -94,3 +102,8 @@ wavacity-editor/
 
 # Script logs
 logs/
+
+# Secrets / tokens
+*.pem
+*.key
+jwt_secret.txt

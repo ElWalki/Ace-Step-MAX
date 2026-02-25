@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Song, Playlist } from '../types';
-import { Heart, Plus, Music, Play, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Heart, Plus, Music, Play, MoreHorizontal, Trash2, Loader2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
+import { GenerationConfigModal } from './GenerationConfigModal';
 import { useI18n } from '../context/I18nContext';
 
 interface LibraryViewProps {
@@ -48,10 +49,49 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     onDeleteReferenceTrack,
 }) => {
     const { t } = useI18n();
-    const { user } = useAuth();
+    const { user, token } = useAuth();
     const [activeTab, setActiveTab] = useState<'all' | 'playlists' | 'liked' | 'uploads'>('all');
     const [shareModalOpen, setShareModalOpen] = useState(false);
     const [shareSong, setShareSong] = useState<Song | null>(null);
+    const [configSong, setConfigSong] = useState<Song | null>(null);
+    const [visibleAllCount, setVisibleAllCount] = useState(15);
+    const [visibleLikedCount, setVisibleLikedCount] = useState(15);
+    const allSentinelRef = useRef<HTMLDivElement>(null);
+    const likedSentinelRef = useRef<HTMLDivElement>(null);
+
+    // Reset visible counts when switching tabs
+    useEffect(() => {
+        setVisibleAllCount(15);
+        setVisibleLikedCount(15);
+    }, [activeTab]);
+
+    const visibleAll = useMemo(() => allSongs.slice(0, visibleAllCount), [allSongs, visibleAllCount]);
+    const hasMoreAll = visibleAllCount < allSongs.length;
+
+    const visibleLiked = useMemo(() => likedSongs.slice(0, visibleLikedCount), [likedSongs, visibleLikedCount]);
+    const hasMoreLiked = visibleLikedCount < likedSongs.length;
+
+    useEffect(() => {
+        const sentinel = allSentinelRef.current;
+        if (!sentinel || activeTab !== 'all') return;
+        const observer = new IntersectionObserver(
+            (entries) => { if (entries[0].isIntersecting && hasMoreAll) setVisibleAllCount(prev => Math.min(prev + 15, allSongs.length)); },
+            { rootMargin: '200px' }
+        );
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [hasMoreAll, allSongs.length, activeTab]);
+
+    useEffect(() => {
+        const sentinel = likedSentinelRef.current;
+        if (!sentinel || activeTab !== 'liked') return;
+        const observer = new IntersectionObserver(
+            (entries) => { if (entries[0].isIntersecting && hasMoreLiked) setVisibleLikedCount(prev => Math.min(prev + 15, likedSongs.length)); },
+            { rootMargin: '200px' }
+        );
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [hasMoreLiked, likedSongs.length, activeTab]);
 
     const formatBytes = (bytes?: number | null) => {
         if (!bytes || bytes <= 0) return '0 B';
@@ -117,7 +157,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     {allSongs.length === 0 ? (
                         <div className="text-sm text-zinc-500 dark:text-zinc-400">No songs yet.</div>
                     ) : (
-                        allSongs.map((song, idx) => (
+                        visibleAll.map((song, idx) => (
                             <div key={song.id} className="group flex items-center gap-4 p-2 rounded hover:bg-zinc-100 dark:hover:bg-white/10 transition-colors" onClick={() => onPlaySong(song, allSongs)}>
                                 <span className="text-zinc-400 dark:text-zinc-500 w-6 text-center group-hover:hidden">{idx + 1}</span>
                                 <span className="text-zinc-900 dark:text-white w-6 text-center hidden group-hover:block"><Play size={14} fill="currentColor" /></span>
@@ -156,10 +196,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                         onShare={() => {
                                             setShareModalOpen(true);
                                         }}
+                                        onViewConfig={() => setConfigSong(song)}
                                     />
                                 </div>
                             </div>
                         ))
+                    )}
+                    {hasMoreAll && (
+                        <div ref={allSentinelRef} className="flex items-center justify-center py-4">
+                            <Loader2 size={18} className="animate-spin text-zinc-400" />
+                            <span className="ml-2 text-xs text-zinc-500">{visibleAllCount} / {allSongs.length}</span>
+                        </div>
                     )}
                  </div>
              )}
@@ -184,7 +231,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     </div>
 
                     <div className="space-y-1">
-                        {likedSongs.map((song, idx) => (
+                        {visibleLiked.map((song, idx) => (
                             <div key={song.id} className="group flex items-center gap-4 p-2 rounded hover:bg-zinc-100 dark:hover:bg-white/10 transition-colors" onClick={() => onPlaySong(song, likedSongs)}>
                                 <span className="text-zinc-400 dark:text-zinc-500 w-6 text-center group-hover:hidden">{idx + 1}</span>
                                 <span className="text-zinc-900 dark:text-white w-6 text-center hidden group-hover:block"><Play size={14} fill="currentColor" /></span>
@@ -224,10 +271,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                         onShare={() => {
                                             setShareModalOpen(true);
                                         }}
+                                        onViewConfig={() => setConfigSong(song)}
                                     />
                                 </div>
                             </div>
                         ))}
+                        {hasMoreLiked && (
+                            <div ref={likedSentinelRef} className="flex items-center justify-center py-4">
+                                <Loader2 size={18} className="animate-spin text-zinc-400" />
+                                <span className="ml-2 text-xs text-zinc-500">{visibleLikedCount} / {likedSongs.length}</span>
+                            </div>
+                        )}
                     </div>
                  </div>
              )}
@@ -282,6 +336,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 isOpen={shareModalOpen}
                 onClose={() => { setShareModalOpen(false); setShareSong(null); }}
                 song={shareSong}
+            />
+        )}
+        {configSong && (
+            <GenerationConfigModal
+                song={configSong}
+                token={token}
+                isOpen={!!configSong}
+                onClose={() => setConfigSong(null)}
             />
         )}
         </>

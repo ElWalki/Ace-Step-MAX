@@ -101,7 +101,7 @@ export const Player: React.FC<PlayerProps> = ({
     // Show minimal player when no song is playing
     if (!currentSong) {
         return (
-            <div className="h-20 lg:h-24 bg-white dark:bg-black/95 backdrop-blur border-t border-zinc-200 dark:border-white/10 flex items-center justify-center z-50 transition-colors duration-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] dark:shadow-none">
+            <div className="h-20 lg:h-24 bg-white dark:bg-black border-t border-zinc-200 dark:border-white/10 flex items-center justify-center z-50 transition-colors duration-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] dark:shadow-none">
                 <button
                     onClick={() => onPlayFirst?.()}
                     className="flex items-center gap-3 text-zinc-400 dark:text-zinc-600 hover:text-zinc-600 dark:hover:text-zinc-400 cursor-pointer transition-colors"
@@ -337,7 +337,7 @@ export const Player: React.FC<PlayerProps> = ({
         }
 
         return (
-            <div className="bg-white dark:bg-black/95 backdrop-blur border-t border-zinc-200 dark:border-white/10 flex flex-col z-50 transition-colors duration-300 safe-area-inset-bottom">
+            <div className="bg-white dark:bg-black border-t border-zinc-200 dark:border-white/10 flex flex-col z-50 transition-colors duration-300 safe-area-inset-bottom">
                 {/* Progress Bar - taller for touch */}
                 <div
                     ref={progressBarRef}
@@ -636,7 +636,7 @@ export const Player: React.FC<PlayerProps> = ({
     }
 
     return (
-        <div className="h-20 lg:h-24 bg-white dark:bg-black/95 backdrop-blur border-t border-zinc-200 dark:border-white/10 flex flex-col z-50 transition-colors duration-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.1)] dark:shadow-none">
+        <div className="h-20 lg:h-24 bg-white dark:bg-black border-t border-zinc-200 dark:border-white/10 flex flex-col z-50 transition-colors duration-300 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] dark:shadow-none">
 
             {/* Progress Bar */}
             <div

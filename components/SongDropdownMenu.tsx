@@ -9,7 +9,10 @@ import {
     ListPlus,
     Download,
     Trash2,
-    Share2
+    Share2,
+    Settings,
+    Database,
+    Tag
 } from 'lucide-react';
 
 interface SongDropdownMenuProps {
@@ -29,6 +32,9 @@ interface SongDropdownMenuProps {
     onDelete?: () => void;
     onUseAsReference?: () => void;
     onCoverSong?: () => void;
+    onPrepareTraining?: () => void;
+    onViewConfig?: () => void;
+    onEditMetadata?: () => void;
 }
 
 interface MenuItemProps {
@@ -75,7 +81,10 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
     onShare,
     onDelete,
     onUseAsReference,
-    onCoverSong
+    onCoverSong,
+    onPrepareTraining,
+    onViewConfig,
+    onEditMetadata
 }) => {
     const { t } = useI18n();
     const menuRef = useRef<HTMLDivElement>(null);
@@ -214,10 +223,30 @@ export const SongDropdownMenu: React.FC<SongDropdownMenuProps> = ({
                     disabled={!song.audioUrl}
                 />
             )}
+            {onPrepareTraining && (
+                <MenuItem
+                    icon={<Database size={14} />}
+                    label={t('prepareTraining') || 'Prepare for Training'}
+                    onClick={() => handleAction(onPrepareTraining)}
+                    disabled={!song.audioUrl}
+                />
+            )}
 
             <MenuDivider />
 
             {/* Library Actions */}
+            <MenuItem
+                icon={<Settings size={14} />}
+                label={t('viewConfig') || 'Generation Config'}
+                onClick={() => handleAction(onViewConfig)}
+            />
+            {isOwner && onEditMetadata && (
+                <MenuItem
+                    icon={<Tag size={14} />}
+                    label={'Edit Metadata'}
+                    onClick={() => handleAction(onEditMetadata)}
+                />
+            )}
             <MenuItem
                 icon={<ListPlus size={14} />}
                 label={t('addToPlaylist')}

@@ -1,40 +1,49 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/🎵-ACE--Step_UI-ff69b4?style=for-the-badge&labelColor=1a1a1a" alt="ACE-Step UI" height="60">
-</p>
-
-<h1 align="center">ACE-Step UI</h1>
+<h1 align="center">🎵 ACE Step MAX V0.1.0</h1>
 
 <p align="center">
-  <strong>The Ultimate Open Source Suno Alternative</strong><br>
-  <em>Seamless integration with <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step 1.5</a> - The Open Source AI Music Generation Model</em>
+  <strong>Private AI Music Production Suite</strong><br>
+  <em>Custom fork based on <a href="https://github.com/ace-step/ACE-Step-1.5">ACE-Step 1.5</a> with enhanced features</em>
 </p>
 
 <p align="center">
-  <a href="https://www.youtube.com/@Ambsd-yy7os">
-    <img src="https://img.shields.io/badge/▶_Subscribe-YouTube-FF0000?style=for-the-badge&logo=youtube" alt="Subscribe on YouTube">
-  </a>
-  <a href="https://x.com/AmbsdOP">
-    <img src="https://img.shields.io/badge/Follow-@AmbsdOP-1DA1F2?style=for-the-badge&logo=x&logoColor=white" alt="Follow on X">
-  </a>
+  <img src="https://img.shields.io/badge/Status-Beta-orange?style=flat-square" alt="Beta">
+  <img src="https://img.shields.io/badge/Private-Confidential-red?style=flat-square" alt="Private">
+  <img src="https://img.shields.io/badge/Version-0.1.0-blue?style=flat-square" alt="Version">
 </p>
 
+> ⚠️ **CONFIDENTIAL** — This repository is private. Do not share access or distribute without authorization.
+
 <p align="center">
-  <a href="#-demo">Demo</a> •
-  <a href="#-why-ace-step-ui">Why ACE-Step</a> •
-  <a href="#-features">Features</a> •
+  <a href="#-max-features">MAX Features</a> •
+  <a href="#-features">Base Features</a> •
   <a href="#-installation">Installation</a> •
-  <a href="#-usage">Usage</a> •
-  <a href="#-contributing">Contributing</a>
+  <a href="#-usage">Usage</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/React-18.3-61DAFB?style=flat-square&logo=react" alt="React">
+  <img src="https://img.shields.io/badge/React-19.x-61DAFB?style=flat-square&logo=react" alt="React">
   <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=flat-square&logo=typescript" alt="TypeScript">
   <img src="https://img.shields.io/badge/TailwindCSS-3.x-06B6D4?style=flat-square&logo=tailwindcss" alt="TailwindCSS">
   <img src="https://img.shields.io/badge/SQLite-Local_First-003B57?style=flat-square&logo=sqlite" alt="SQLite">
-  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/stars/fspecii/ace-step-ui?style=flat-square" alt="Stars">
 </p>
+
+---
+
+## 🚀 MAX Features
+
+Enhancements added in this private fork:
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **Vocal Separation (Demucs)** | ✅ Beta | Separate vocals/instrumental from any song, use as reference |
+| **Vocal Tab** | ✅ Beta | Dedicated vocal reference panel with auto-apply options |
+| **Independent Audio Strengths** | ✅ | Separate reference strength + source strength sliders |
+| **Audio Metadata Tagging** | ✅ | ID3 tags (title, artist, BPM, key) embedded in generated MP3s |
+| **Edit Metadata** | ✅ | Edit BPM, key, time signature, title from song context menu |
+| **LoRA Quick Unload** | ✅ | One-click unload button visible on collapsed LoRA panel |
+| **Time Signature Labels** | ✅ | Proper 2/4, 3/4, 4/4, 6/8 notation in dropdowns |
+| **Prepare for Training** | ✅ Beta | Quick-access button to prepare songs for LoRA training |
+| **VRAM Safety** | ✅ | Generation disabled during Demucs separation |
 
 ---
 

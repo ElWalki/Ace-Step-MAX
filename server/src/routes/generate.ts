@@ -18,6 +18,7 @@ import {
   downloadAudioToBuffer,
   resolvePythonPath,
 } from '../services/acestep.js';
+import { tagAudioBuffer } from '../services/audioMetadata.js';
 import { getStorageProvider } from '../services/storage/factory.js';
 
 const router = Router();
@@ -125,6 +126,15 @@ interface GenerateBody {
   trackName?: string;
   completeTrackClasses?: string[];
   isFormatCaption?: boolean;
+
+  // LoRA state at generation time
+  loraLoaded?: boolean;
+  loraPath?: string;
+  loraName?: string;
+  loraScale?: number;
+  loraEnabled?: boolean;
+  loraTriggerTag?: string;
+  loraTagPosition?: string;
 }
 
 router.post('/upload-audio', authMiddleware, (req: AuthenticatedRequest, res: Response, next: Function) => {
@@ -237,6 +247,13 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      loraLoaded,
+      loraPath,
+      loraName,
+      loraScale,
+      loraEnabled,
+      loraTriggerTag,
+      loraTagPosition,
     } = req.body as GenerateBody;
 
     if (!customMode && !songDescription) {
@@ -304,6 +321,13 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      loraLoaded,
+      loraPath,
+      loraName,
+      loraScale,
+      loraEnabled,
+      loraTriggerTag,
+      loraTagPosition,
     };
 
     // Create job record in database
@@ -382,6 +406,10 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
           // If succeeded AND we were the first to update (optimistic lock), create song records
           if (aceStatus.status === 'succeeded' && aceStatus.result && wasUpdated) {
             const params = typeof job.params === 'string' ? JSON.parse(job.params) : job.params;
+            // Inject the actual seed used by the generation engine
+            if (aceStatus.result.actualSeed !== undefined) {
+              params.actualSeed = aceStatus.result.actualSeed;
+            }
             const audioUrls = aceStatus.result.audioUrls.filter((url: string) => {
               const lower = url.toLowerCase();
               return lower.endsWith('.mp3') || lower.endsWith('.flac') || lower.endsWith('.wav');
@@ -397,8 +425,25 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
               const songId = generateUUID();
 
               try {
-                const { buffer } = await downloadAudioToBuffer(audioUrl);
+                const { buffer: rawBuffer } = await downloadAudioToBuffer(audioUrl);
                 const ext = audioUrl.includes('.flac') ? '.flac' : '.mp3';
+                const format = ext === '.flac' ? 'flac' : 'mp3';
+
+                // Tag audio with metadata
+                const finalBpm = aceStatus.result.bpm || params.bpm;
+                const finalKey = aceStatus.result.keyScale || params.keyScale;
+                const finalTimeSig = aceStatus.result.timeSignature || params.timeSignature;
+                const buffer = tagAudioBuffer(rawBuffer, format, {
+                  title: songTitle,
+                  artist: req.user!.username || 'Unknown',
+                  album: 'ACE Step MAX',
+                  bpm: finalBpm ? Number(finalBpm) : undefined,
+                  key: finalKey || undefined,
+                  timeSignature: finalTimeSig || undefined,
+                  genre: params.style || 'AI Generated',
+                  comment: undefined,
+                });
+
                 const storageKey = `${req.user!.id}/${songId}${ext}`;
                 await storage.upload(storageKey, buffer, `audio/${ext.slice(1)}`);
                 const storedPath = storage.getPublicUrl(storageKey);
@@ -642,6 +687,96 @@ router.get('/models', async (_req, res: Response) => {
     res.json({ models });
   } catch (error) {
     console.error('Models error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// In-memory tracking of active model downloads
+const activeDownloads = new Map<string, { status: 'downloading' | 'done' | 'error'; progress: string; error?: string }>();
+
+// POST /api/generate/models/download — Download a model from HuggingFace
+router.post('/models/download', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { modelName } = req.body;
+    if (!modelName || typeof modelName !== 'string') {
+      res.status(400).json({ error: 'modelName is required' });
+      return;
+    }
+
+    // Check if already downloading
+    const existing = activeDownloads.get(modelName);
+    if (existing && existing.status === 'downloading') {
+      res.json({ status: 'downloading', message: `Already downloading ${modelName}`, progress: existing.progress });
+      return;
+    }
+
+    const ACESTEP_DIR = process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
+    const pythonPath = resolvePythonPath(ACESTEP_DIR);
+    const downloaderScript = path.join(ACESTEP_DIR, 'acestep', 'model_downloader.py');
+
+    // Check script exists
+    const { existsSync: fsExistsSync } = await import('fs');
+    if (!fsExistsSync(downloaderScript)) {
+      res.status(500).json({ error: 'model_downloader.py not found' });
+      return;
+    }
+
+    // Mark as downloading
+    activeDownloads.set(modelName, { status: 'downloading', progress: 'Starting download...' });
+
+    // Spawn the download process asynchronously
+    const { spawn } = await import('child_process');
+    const proc = spawn(pythonPath, [downloaderScript, '--model', modelName, '--skip-main'], {
+      cwd: ACESTEP_DIR,
+      env: { ...process.env, ACESTEP_PATH: ACESTEP_DIR, PYTHONUNBUFFERED: '1' },
+    });
+
+    let lastOutput = '';
+    proc.stdout.on('data', (data) => {
+      lastOutput = data.toString().trim();
+      activeDownloads.set(modelName, { status: 'downloading', progress: lastOutput });
+    });
+    proc.stderr.on('data', (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        lastOutput = line;
+        activeDownloads.set(modelName, { status: 'downloading', progress: lastOutput });
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        activeDownloads.set(modelName, { status: 'done', progress: 'Download complete!' });
+      } else {
+        activeDownloads.set(modelName, { status: 'error', progress: lastOutput, error: `Download failed (exit code ${code})` });
+      }
+      // Clean up after 5 minutes
+      setTimeout(() => activeDownloads.delete(modelName), 5 * 60 * 1000);
+    });
+
+    proc.on('error', (err) => {
+      activeDownloads.set(modelName, { status: 'error', progress: '', error: err.message });
+      setTimeout(() => activeDownloads.delete(modelName), 5 * 60 * 1000);
+    });
+
+    res.json({ status: 'downloading', message: `Started downloading ${modelName}` });
+  } catch (error) {
+    console.error('Model download error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// GET /api/generate/models/download/:modelName — Check download status
+router.get('/models/download/:modelName', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { modelName } = req.params;
+    const status = activeDownloads.get(modelName);
+    if (!status) {
+      res.json({ status: 'idle', message: 'No active download' });
+      return;
+    }
+    res.json(status);
+  } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
 });

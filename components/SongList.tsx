@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Song } from '../types';
 import { Play, MoreHorizontal, Heart, ThumbsDown, ListPlus, Pause, Search, Filter, Check, Globe, Lock, Loader2, ThumbsUp, Share2, Video, Info, Clock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -6,6 +6,7 @@ import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
+import { GenerationConfigModal } from './GenerationConfigModal';
 import { songsApi } from '../services/api';
 
 interface SongListProps {
@@ -13,6 +14,7 @@ interface SongListProps {
     currentSong: Song | null;
     selectedSong: Song | null;
     likedSongIds: Set<string>;
+    playedSongIds?: Set<string>;
     isPlaying: boolean;
     referenceTracks?: { id: string; filename: string; audio_url: string; duration?: number | null; created_at?: string }[];
     onPlay: (song: Song) => void;
@@ -28,8 +30,10 @@ interface SongListProps {
     onDeleteMany?: (songs: Song[]) => void;
     onUseAsReference?: (song: Song) => void;
     onCoverSong?: (song: Song) => void;
+    onPrepareTraining?: (song: Song) => void;
     onUseUploadAsReference?: (track: { audio_url: string; filename: string }) => void;
     onCoverUpload?: (track: { audio_url: string; filename: string }) => void;
+    onEditMetadata?: (song: Song) => void;
 }
 
 // ... existing code ...
@@ -91,6 +95,7 @@ export const SongList: React.FC<SongListProps> = ({
     currentSong,
     selectedSong,
     likedSongIds,
+    playedSongIds = new Set(),
     isPlaying,
     referenceTracks = [],
     onPlay,
@@ -106,16 +111,21 @@ export const SongList: React.FC<SongListProps> = ({
     onDeleteMany,
     onUseAsReference,
     onCoverSong,
+    onPrepareTraining,
     onUseUploadAsReference,
-    onCoverUpload
+    onCoverUpload,
+    onEditMetadata
 }) => {
-    const { user } = useAuth();
+    const { user, token } = useAuth();
     const { t } = useI18n();
     const [searchQuery, setSearchQuery] = useState('');
     const [activeFilters, setActiveFilters] = useState<Set<FilterType>>(new Set());
     const [isFilterOpen, setIsFilterOpen] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [configSong, setConfigSong] = useState<Song | null>(null);
+    const [visibleCount, setVisibleCount] = useState(15);
+    const sentinelRef = useRef<HTMLDivElement>(null);
     const filterRef = useRef<HTMLDivElement>(null);
 
     const FILTERS: { id: FilterType; label: string; icon: React.ReactNode }[] = [
@@ -207,6 +217,30 @@ export const SongList: React.FC<SongListProps> = ({
         return [...songItems, ...uploadItems].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     }, [filteredSongs, filteredUploads]);
 
+    // Reset visible count when filters/search change
+    useEffect(() => {
+        setVisibleCount(15);
+    }, [searchQuery, activeFilters]);
+
+    const visibleItems = useMemo(() => listItems.slice(0, visibleCount), [listItems, visibleCount]);
+    const hasMore = visibleCount < listItems.length;
+
+    // IntersectionObserver to load more when sentinel is visible
+    useEffect(() => {
+        const sentinel = sentinelRef.current;
+        if (!sentinel) return;
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting && hasMore) {
+                    setVisibleCount(prev => Math.min(prev + 15, listItems.length));
+                }
+            },
+            { rootMargin: '200px' }
+        );
+        observer.observe(sentinel);
+        return () => observer.disconnect();
+    }, [hasMore, listItems.length]);
+
     const selectableSongs = useMemo(
         () => filteredSongs.filter(song => !song.isGenerating),
         [filteredSongs]
@@ -243,7 +277,7 @@ export const SongList: React.FC<SongListProps> = ({
                             <button
                                 onClick={() => setIsFilterOpen(!isFilterOpen)}
                                 className={`
-                        border text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all select-none
+                        border text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors duration-150 select-none
                         ${isFilterOpen || activeFilters.size > 0
                                         ? 'bg-zinc-900 dark:bg-white text-white dark:text-black border-transparent'
                                         : 'bg-zinc-100 dark:bg-[#121214] hover:bg-zinc-200 dark:hover:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-700 dark:text-white'
@@ -273,7 +307,7 @@ export const SongList: React.FC<SongListProps> = ({
                                                 {filter.label}
                                             </div>
                                             <div className={`
-                                     w-4 h-4 rounded border flex items-center justify-center transition-all
+                                     w-4 h-4 rounded border flex items-center justify-center transition-colors duration-150
                                      ${activeFilters.has(filter.id)
                                                     ? 'bg-pink-600 border-pink-600'
                                                     : 'border-zinc-300 dark:border-zinc-600 group-hover:border-zinc-400 dark:group-hover:border-zinc-500'
@@ -292,7 +326,7 @@ export const SongList: React.FC<SongListProps> = ({
                                 setIsSelecting(prev => !prev);
                                 setSelectedIds(new Set());
                             }}
-                            className={`border text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-all select-none ${isSelecting
+                            className={`border text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors duration-150 select-none ${isSelecting
                                     ? 'bg-zinc-900 dark:bg-white text-white dark:text-black border-transparent'
                                     : 'bg-zinc-100 dark:bg-[#121214] hover:bg-zinc-200 dark:hover:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-700 dark:text-white'
                                 }`}
@@ -355,7 +389,7 @@ export const SongList: React.FC<SongListProps> = ({
                             </button>
                         </div>
                     ) : (
-                        listItems.map((item) => (
+                        visibleItems.map((item) => (
                             item.type === 'song' ? (
                                 <SongItem
                                     key={item.id}
@@ -366,6 +400,7 @@ export const SongList: React.FC<SongListProps> = ({
                                     isChecked={selectedIds.has(item.song.id)}
                                     isLiked={likedSongIds.has(item.song.id)}
                                     isPlaying={isPlaying}
+                                    isPlayed={playedSongIds.has(item.song.id)}
                                     isOwner={user?.id === item.song.userId}
                                     onPlay={() => onPlay(item.song)}
                                     onSelect={() => onSelect(item.song)}
@@ -388,6 +423,9 @@ export const SongList: React.FC<SongListProps> = ({
                                     onSongUpdate={onSongUpdate}
                                     onUseAsReference={() => onUseAsReference?.(item.song)}
                                     onCoverSong={() => onCoverSong?.(item.song)}
+                                    onPrepareTraining={() => onPrepareTraining?.(item.song)}
+                                    onViewConfig={() => setConfigSong(item.song)}
+                                    onEditMetadata={() => onEditMetadata?.(item.song)}
                                 />
                             ) : (
                                 <UploadItem
@@ -409,12 +447,48 @@ export const SongList: React.FC<SongListProps> = ({
                                     }}
                                     onUseAsReference={() => onUseUploadAsReference?.(item.track)}
                                     onCoverSong={() => onCoverUpload?.(item.track)}
+                                    onPrepareTraining={() => onPrepareTraining?.({
+                                        id: `upload_${item.id}`,
+                                        title: item.track.filename.replace(/\.[^/.]+$/, ''),
+                                        lyrics: '',
+                                        style: 'Upload',
+                                        coverUrl: '',
+                                        duration: item.track.duration
+                                            ? `${Math.floor(item.track.duration / 60)}:${String(Math.floor(item.track.duration % 60)).padStart(2, '0')}`
+                                            : '0:00',
+                                        createdAt: item.createdAt,
+                                        tags: [],
+                                        audioUrl: item.track.audio_url,
+                                        isPublic: false,
+                                    } as Song)}
                                 />
                             )
                         ))
                     )}
+                    {/* Sentinel for infinite scroll */}
+                    {hasMore && (
+                        <div ref={sentinelRef} className="flex items-center justify-center py-6">
+                            <Loader2 size={20} className="animate-spin text-zinc-400" />
+                            <span className="ml-2 text-xs text-zinc-500">{visibleCount} / {listItems.length}</span>
+                        </div>
+                    )}
+                    {!hasMore && listItems.length > 15 && (
+                        <div className="text-center py-4 text-xs text-zinc-400">
+                            {listItems.length} {listItems.length === 1 ? 'item' : 'items'}
+                        </div>
+                    )}
                 </div>
             </div> {/* End container */}
+
+            {/* Generation Config Modal */}
+            {configSong && (
+                <GenerationConfigModal
+                    song={configSong}
+                    token={token}
+                    isOpen={!!configSong}
+                    onClose={() => setConfigSong(null)}
+                />
+            )}
         </div>
     );
 };
@@ -427,6 +501,7 @@ interface SongItemProps {
     isChecked: boolean;
     isLiked: boolean;
     isPlaying: boolean;
+    isPlayed: boolean;
     isOwner: boolean;
     onPlay: () => void;
     onSelect: () => void;
@@ -441,9 +516,12 @@ interface SongItemProps {
     onSongUpdate?: (updatedSong: Song) => void;
     onUseAsReference?: () => void;
     onCoverSong?: () => void;
+    onPrepareTraining?: () => void;
+    onViewConfig?: () => void;
+    onEditMetadata?: () => void;
 }
 
-const SongItem: React.FC<SongItemProps> = ({
+const SongItem: React.FC<SongItemProps> = React.memo(({
     song,
     isCurrent,
     isSelected,
@@ -451,6 +529,7 @@ const SongItem: React.FC<SongItemProps> = ({
     isChecked,
     isLiked,
     isPlaying,
+    isPlayed,
     isOwner,
     onPlay,
     onSelect,
@@ -464,7 +543,10 @@ const SongItem: React.FC<SongItemProps> = ({
     onDelete,
     onSongUpdate,
     onUseAsReference,
-    onCoverSong
+    onCoverSong,
+    onPrepareTraining,
+    onViewConfig,
+    onEditMetadata
 }) => {
     const { token } = useAuth();
     const [showDropdown, setShowDropdown] = useState(false);
@@ -537,7 +619,7 @@ const SongItem: React.FC<SongItemProps> = ({
                     }
                 }, 0);
             }}
-            className={`group flex items-center gap-4 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-[#18181b] transition-all cursor-pointer border ${isSelected ? 'bg-zinc-100 dark:bg-[#18181b] border-zinc-200 dark:border-white/10' : 'border-transparent bg-transparent'} ${song.audioUrl && !song.isGenerating ? 'cursor-grab active:cursor-grabbing' : ''}`}
+            className={`group flex items-center gap-4 p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-[#18181b] transition-colors duration-150 cursor-pointer border ${isSelected ? 'bg-zinc-100 dark:bg-[#18181b] border-zinc-200 dark:border-white/10' : 'border-transparent bg-transparent'} ${song.audioUrl && !song.isGenerating ? 'cursor-grab active:cursor-grabbing' : ''}`}
         >
             {isSelectionMode && (
                 <button
@@ -593,7 +675,7 @@ const SongItem: React.FC<SongItemProps> = ({
                     </div>
                 ) : (
                     <div
-                        className={`absolute inset-0 bg-black/40 flex items-center justify-center backdrop-blur-[1px] cursor-pointer transition-opacity duration-200 ${isCurrent ? 'opacity-100' : 'opacity-0 group-hover/image:opacity-100'}`}
+                        className={`absolute inset-0 bg-black/40 flex items-center justify-center cursor-pointer transition-opacity duration-200 ${isCurrent ? 'opacity-100' : 'opacity-0 group-hover/image:opacity-100'}`}
                         onClick={(e) => {
                             e.stopPropagation();
                             onPlay();
@@ -627,7 +709,7 @@ const SongItem: React.FC<SongItemProps> = ({
                             />
                         ) : (
                             <h3
-                                className={`font-bold text-lg truncate ${isCurrent ? 'text-pink-600 dark:text-pink-500' : 'text-zinc-900 dark:text-white'} ${isOwner && !song.isGenerating ? 'cursor-pointer hover:underline' : ''}`}
+                                className={`font-bold text-lg truncate ${isCurrent ? 'text-pink-600 dark:text-pink-500' : !isPlayed && !song.isGenerating ? 'animate-unplayed-pulse' : 'text-zinc-900 dark:text-white'} ${isOwner && !song.isGenerating ? 'cursor-pointer hover:underline' : ''}`}
                                 onClick={(e) => {
                                     if (isOwner && !song.isGenerating) {
                                         e.stopPropagation();
@@ -638,9 +720,30 @@ const SongItem: React.FC<SongItemProps> = ({
                                 {song.title || (song.isGenerating ? (song.queuePosition ? "Queued..." : "Creating...") : "Untitled")}
                             </h3>
                         )}
-                        <span className="inline-flex items-center justify-center text-[9px] font-bold text-white bg-gradient-to-r from-pink-500 to-purple-500 px-1.5 py-0.5 rounded-sm shadow-sm" title={`DiT model: ${song.ditModel || 'undefined'}`}>
+                        <span className="inline-flex items-center justify-center text-[10px] font-extrabold text-white bg-gradient-to-r from-pink-500 to-purple-600 px-2 py-0.5 rounded shadow-md ring-1 ring-pink-400/30" title={`DiT model: ${song.ditModel || 'undefined'}`}>
                             {getModelDisplayName(song.ditModel)}
                         </span>
+                        {(song.generationParams?.loraName || (song.generationParams?.loraPath && song.generationParams?.loraLoaded)) && (
+                            <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 truncate max-w-[160px]" title={`LoRA: ${song.generationParams.loraName || song.generationParams.loraPath}`}>
+                                🎛 {song.generationParams.loraName || (() => {
+                                    const parts = (song.generationParams.loraPath || '').split(/[/\\]/).filter(Boolean);
+                                    return parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : parts.pop() || 'LoRA';
+                                })()}
+                            </span>
+                        )}
+                        {(song.generationParams?.actualSeed !== undefined || (song.generationParams?.seed !== undefined && song.generationParams?.seed >= 0)) && (
+                            <span
+                                className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
+                                title={`Seed: ${song.generationParams.actualSeed ?? song.generationParams.seed} — Click to copy`}
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    const seedVal = String(song.generationParams.actualSeed ?? song.generationParams.seed);
+                                    navigator.clipboard.writeText(seedVal);
+                                }}
+                            >
+                                seed: {song.generationParams.actualSeed ?? song.generationParams.seed}
+                            </span>
+                        )}
                         {song.isPublic === false && (
                             <Lock size={12} className="text-zinc-400 dark:text-zinc-500" />
                         )}
@@ -670,7 +773,7 @@ const SongItem: React.FC<SongItemProps> = ({
                         <div className="pt-2">
                             <div className="h-1 rounded-full bg-zinc-200/70 dark:bg-white/10 overflow-hidden">
                                 <div
-                                    className={`h-full bg-gradient-to-r from-pink-500 to-purple-600 transition-all ${song.progress === undefined ? 'opacity-40' : ''}`}
+                                    className={`h-full bg-gradient-to-r from-pink-500 to-purple-600 transition-[width] duration-300 ${song.progress === undefined ? 'opacity-40' : ''}`}
                                     style={{
                                         width: `${Math.min(
                                             100,
@@ -758,6 +861,9 @@ const SongItem: React.FC<SongItemProps> = ({
                                 onShare={() => setShareModalOpen(true)}
                                 onUseAsReference={() => onUseAsReference?.()}
                                 onCoverSong={() => onCoverSong?.()}
+                                onPrepareTraining={() => onPrepareTraining?.()}
+                                onViewConfig={onViewConfig}
+                                onEditMetadata={onEditMetadata}
                             />
                         </div>
                     </div>
@@ -781,14 +887,15 @@ const SongItem: React.FC<SongItemProps> = ({
         />
         </>
     );
-};
+});
 
 const UploadItem: React.FC<{
     track: { id: string; filename: string; audio_url: string; duration?: number | null };
     onPlay: (audioUrl: string, title: string) => void;
     onUseAsReference?: () => void;
     onCoverSong?: () => void;
-}> = ({ track, onPlay, onUseAsReference, onCoverSong }) => {
+    onPrepareTraining?: () => void;
+}> = ({ track, onPlay, onUseAsReference, onCoverSong, onPrepareTraining }) => {
     const title = track.filename.replace(/\.[^/.]+$/, '');
     const duration = track.duration
         ? `${Math.floor(track.duration / 60)}:${String(Math.floor(track.duration % 60)).padStart(2, '0')}`
@@ -813,6 +920,7 @@ const UploadItem: React.FC<{
             isChecked={false}
             isLiked={false}
             isPlaying={false}
+            isPlayed={true}
             isOwner={false}
             onPlay={() => onPlay(track.audio_url, title)}
             onSelect={() => onPlay(track.audio_url, title)}
@@ -826,6 +934,7 @@ const UploadItem: React.FC<{
             onDelete={() => undefined}
             onUseAsReference={onUseAsReference}
             onCoverSong={onCoverSong}
+            onPrepareTraining={onPrepareTraining}
         />
     );
 };

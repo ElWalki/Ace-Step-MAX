@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2 } from 'lucide-react';
+import ReactDOM from 'react-dom';
+import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database } from 'lucide-react';
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
-import { generateApi } from '../services/api';
+import { generateApi, trainingApi } from '../services/api';
 import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
 
@@ -21,10 +22,13 @@ interface ReferenceTrack {
 interface CreatePanelProps {
   onGenerate: (params: GenerationParams) => void;
   isGenerating: boolean;
+  activeJobCount?: number;
+  maxConcurrentJobs?: number;
   initialData?: { song: Song, timestamp: number } | null;
   createdSongs?: Song[];
   pendingAudioSelection?: { target: 'reference' | 'source'; url: string; title?: string } | null;
   onAudioSelectionApplied?: () => void;
+  onPrepareTraining?: (song: Song) => void;
 }
 
 const KEY_SIGNATURES = [
@@ -48,7 +52,13 @@ const KEY_SIGNATURES = [
   'B major', 'B minor'
 ];
 
-const TIME_SIGNATURES = ['', '2', '3', '4', '6', 'N/A'];
+const TIME_SIGNATURES = [
+  { value: '', label: 'Auto' },
+  { value: '2', label: '2/4' },
+  { value: '3', label: '3/4' },
+  { value: '4', label: '4/4' },
+  { value: '6', label: '6/8' },
+];
 
 const TRACK_NAMES = [
   'woodwinds', 'brass', 'fx', 'synth', 'strings', 'percussion',
@@ -112,10 +122,13 @@ const VOCAL_LANGUAGE_KEYS = [
 export const CreatePanel: React.FC<CreatePanelProps> = ({
   onGenerate,
   isGenerating,
+  activeJobCount = 0,
+  maxConcurrentJobs = 4,
   initialData,
   createdSongs = [],
   pendingAudioSelection,
   onAudioSelectionApplied,
+  onPrepareTraining,
 }) => {
   const { isAuthenticated, token, user } = useAuth();
   const { t } = useI18n();
@@ -192,10 +205,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [referenceAudioTitle, setReferenceAudioTitle] = useState('');
   const [sourceAudioTitle, setSourceAudioTitle] = useState('');
   const [audioCodes, setAudioCodes] = useState('');
+  const [isConvertingCodes, setIsConvertingCodes] = useState(false);
   const [repaintingStart, setRepaintingStart] = useState(0);
   const [repaintingEnd, setRepaintingEnd] = useState(-1);
   const [instruction, setInstruction] = useState('Fill the audio semantic mask based on the given conditions:');
-  const [audioCoverStrength, setAudioCoverStrength] = useState(1.0);
+  const [audioCoverStrength, setAudioCoverStrength] = useState(1.0); // reference strength
+  const [sourceStrength, setSourceStrength] = useState(1.0); // source/cover strength (independent)
   const [taskType, setTaskType] = useState('text2music');
   const [useAdg, setUseAdg] = useState(false);
   const [cfgIntervalStart, setCfgIntervalStart] = useState(0.0);
@@ -219,12 +234,42 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   // LoRA Parameters
   const [showLoraPanel, setShowLoraPanel] = useState(false);
-  const [loraPath, setLoraPath] = useState('./lora_output/final/adapter');
+  const [loraPath, setLoraPath] = useState('./lora_library');
   const [loraLoaded, setLoraLoaded] = useState(false);
   const [loraEnabled, setLoraEnabled] = useState(true);
   const [loraScale, setLoraScale] = useState(1.0);
   const [loraError, setLoraError] = useState<string | null>(null);
   const [isLoraLoading, setIsLoraLoading] = useState(false);
+  const [loraTriggerTag, setLoraTriggerTag] = useState<string>('');
+  const [loraTagPosition, setLoraTagPosition] = useState<string>('prepend');
+
+  // LoRA list (dropdown selector)
+  type LoraVariant = { label: string; path: string; epoch?: number };
+  type LoraListEntry = {
+    name: string;
+    source: 'library' | 'output';
+    sourceDir: string;
+    variants: LoraVariant[];
+    metadata?: { trigger_tag?: string; tag_position?: string; [key: string]: unknown };
+    baseModel?: string;
+  };
+  const [loraList, setLoraList] = useState<LoraListEntry[]>([]);
+  const [loraListLoading, setLoraListLoading] = useState(false);
+  const [selectedLoraName, setSelectedLoraName] = useState<string>('');
+  const [selectedLoraVariant, setSelectedLoraVariant] = useState<string>('');
+
+  // Model download state
+  const [downloadingModels, setDownloadingModels] = useState<Set<string>>(new Set());
+  const [downloadStatus, setDownloadStatus] = useState<Record<string, { status: string; progress: string; error?: string }>>({});
+
+  // LoRA browser state
+  const [showLoraBrowser, setShowLoraBrowser] = useState(false);
+  const [loraBrowsePath, setLoraBrowsePath] = useState('');
+  const [loraBrowseEntries, setLoraBrowseEntries] = useState<{ name: string; type: 'dir' | 'file'; fullPath: string; isAdapter: boolean }[]>([]);
+  const [loraBrowseParent, setLoraBrowseParent] = useState('');
+  const [loraBrowseCurrentPath, setLoraBrowseCurrentPath] = useState('');
+  const [loraBrowseRelativePath, setLoraBrowseRelativePath] = useState('');
+  const [loraBrowseLoading, setLoraBrowseLoading] = useState(false);
 
   // Model selection
   const [selectedModel, setSelectedModel] = useState<string>(() => {
@@ -232,7 +277,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   });
   const [showModelMenu, setShowModelMenu] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
+  const modelMenuPortalRef = useRef<HTMLDivElement>(null);
+  const modelButtonRef = useRef<HTMLButtonElement>(null);
   const previousModelRef = useRef<string>(selectedModel);
+  const loraScaleDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Available models fetched from backend
   const [fetchedModels, setFetchedModels] = useState<{ name: string; is_active: boolean; is_preloaded: boolean }[]>([]);
@@ -277,23 +325,38 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isFormattingStyle, setIsFormattingStyle] = useState(false);
   const [isFormattingLyrics, setIsFormattingLyrics] = useState(false);
+  const [isAIGenerating, setIsAIGenerating] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [dragKind, setDragKind] = useState<'file' | 'audio' | null>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
   const sourceInputRef = useRef<HTMLInputElement>(null);
+  const vocalInputRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [showAudioModal, setShowAudioModal] = useState(false);
   const [audioModalTarget, setAudioModalTarget] = useState<'reference' | 'source'>('reference');
   const [tempAudioUrl, setTempAudioUrl] = useState('');
-  const [audioTab, setAudioTab] = useState<'reference' | 'source'>('reference');
+  const [audioTab, setAudioTab] = useState<'reference' | 'source' | 'vocal'>('reference');
   const referenceAudioRef = useRef<HTMLAudioElement>(null);
   const sourceAudioRef = useRef<HTMLAudioElement>(null);
+  const vocalAudioRef = useRef<HTMLAudioElement>(null);
   const [referencePlaying, setReferencePlaying] = useState(false);
   const [sourcePlaying, setSourcePlaying] = useState(false);
+  const [vocalPlaying, setVocalPlaying] = useState(false);
   const [referenceTime, setReferenceTime] = useState(0);
   const [sourceTime, setSourceTime] = useState(0);
+  const [vocalTime, setVocalTime] = useState(0);
   const [referenceDuration, setReferenceDuration] = useState(0);
   const [sourceDuration, setSourceDuration] = useState(0);
+  const [vocalDuration, setVocalDuration] = useState(0);
+
+  // Vocal separation state
+  const [vocalAudioUrl, setVocalAudioUrl] = useState('');
+  const [vocalAudioTitle, setVocalAudioTitle] = useState('');
+  const [instrumentalAudioUrl, setInstrumentalAudioUrl] = useState('');
+  const [isSeparating, setIsSeparating] = useState(false);
+  const [separationQuality, setSeparationQuality] = useState<'rapida' | 'alta' | 'maxima'>('alta');
+  const [useVocalAsReference, setUseVocalAsReference] = useState(true);
+  const [useInstrumentalAsSource, setUseInstrumentalAsSource] = useState(false);
 
   // Reference tracks modal state
   const [referenceTracks, setReferenceTracks] = useState<ReferenceTrack[]>([]);
@@ -330,6 +393,122 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
   };
 
+  // Preset system
+  interface Preset {
+    name: string;
+    createdAt: string;
+    config: {
+      customMode: boolean;
+      songDescription: string;
+      lyrics: string;
+      style: string;
+      title: string;
+      instrumental: boolean;
+      vocalLanguage: string;
+      vocalGender: string;
+      bpm: number;
+      keyScale: string;
+      timeSignature: string;
+      duration: number;
+      batchSize: number;
+      guidanceScale: number;
+      inferenceSteps: number;
+      inferMethod: string;
+      shift: number;
+      audioFormat: string;
+      thinking: boolean;
+      enhance: boolean;
+      lmBackend: string;
+      lmModel: string;
+      lmTemperature: number;
+      lmCfgScale: number;
+      lmTopK: number;
+      lmTopP: number;
+      lmNegativePrompt: string;
+      selectedModel: string;
+      loraPath: string;
+      loraScale: number;
+      loraEnabled: boolean;
+      loraTriggerTag: string;
+      loraTagPosition: string;
+    };
+  }
+
+  const [presets, setPresets] = useState<Preset[]>(() => {
+    try {
+      const stored = localStorage.getItem('ace-presets');
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+  const [showPresetMenu, setShowPresetMenu] = useState(false);
+  const [presetName, setPresetName] = useState('');
+  const [showSavePreset, setShowSavePreset] = useState(false);
+  const presetMenuRef = useRef<HTMLDivElement>(null);
+
+  const savePreset = (name: string) => {
+    const preset: Preset = {
+      name,
+      createdAt: new Date().toISOString(),
+      config: {
+        customMode, songDescription, lyrics, style, title, instrumental,
+        vocalLanguage, vocalGender, bpm, keyScale, timeSignature, duration,
+        batchSize, guidanceScale, inferenceSteps, inferMethod, shift,
+        audioFormat, thinking, enhance, lmBackend, lmModel, lmTemperature,
+        lmCfgScale, lmTopK, lmTopP, lmNegativePrompt, selectedModel,
+        loraPath, loraScale, loraEnabled, loraTriggerTag, loraTagPosition,
+      },
+    };
+    const updated = [preset, ...presets.filter(p => p.name !== name)];
+    setPresets(updated);
+    localStorage.setItem('ace-presets', JSON.stringify(updated));
+    setShowSavePreset(false);
+    setPresetName('');
+  };
+
+  const loadPreset = (preset: Preset) => {
+    const c = preset.config;
+    setCustomMode(c.customMode);
+    setSongDescription(c.songDescription || '');
+    setLyrics(c.lyrics || '');
+    setStyle(c.style || '');
+    setTitle(c.title || '');
+    setInstrumental(c.instrumental);
+    setVocalLanguage(c.vocalLanguage || 'en');
+    setVocalGender(c.vocalGender as any || '');
+    setBpm(c.bpm ?? 0);
+    setKeyScale(c.keyScale || '');
+    setTimeSignature(c.timeSignature || '');
+    setDuration(c.duration ?? -1);
+    setBatchSize(c.batchSize ?? 1);
+    setGuidanceScale(c.guidanceScale ?? 9);
+    setInferenceSteps(c.inferenceSteps ?? 12);
+    setInferMethod(c.inferMethod as any || 'ode');
+    setShift(c.shift ?? 3);
+    setAudioFormat(c.audioFormat as any || 'mp3');
+    setThinking(c.thinking ?? false);
+    setEnhance(c.enhance ?? false);
+    setLmBackend(c.lmBackend as any || 'pt');
+    setLmModel(c.lmModel || 'acestep-5Hz-lm-0.6B');
+    setLmTemperature(c.lmTemperature ?? 0.8);
+    setLmCfgScale(c.lmCfgScale ?? 2.2);
+    setLmTopK(c.lmTopK ?? 0);
+    setLmTopP(c.lmTopP ?? 0.92);
+    setLmNegativePrompt(c.lmNegativePrompt || 'NO USER INPUT');
+    setSelectedModel(c.selectedModel || 'acestep-v15-turbo-shift3');
+    setLoraPath(c.loraPath || './lora_library');
+    setLoraScale(c.loraScale ?? 1.0);
+    setLoraEnabled(c.loraEnabled ?? true);
+    setLoraTriggerTag(c.loraTriggerTag || '');
+    setLoraTagPosition(c.loraTagPosition || 'prepend');
+    setShowPresetMenu(false);
+  };
+
+  const deletePreset = (name: string) => {
+    const updated = presets.filter(p => p.name !== name);
+    setPresets(updated);
+    localStorage.setItem('ace-presets', JSON.stringify(updated));
+  };
+
   // Resize Logic
   const [lyricsHeight, setLyricsHeight] = useState(() => {
     const saved = localStorage.getItem('acestep_lyrics_height');
@@ -339,10 +518,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const lyricsRef = useRef<HTMLDivElement>(null);
 
 
-  // Close model menu when clicking outside
+  // Close model menu when clicking outside (checks both button wrapper and portal)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (modelMenuRef.current && !modelMenuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      const inButton = modelMenuRef.current?.contains(target);
+      const inPortal = modelMenuPortalRef.current?.contains(target);
+      if (!inButton && !inPortal) {
         setShowModelMenu(false);
       }
     };
@@ -352,6 +534,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
   }, [showModelMenu]);
+
+  // Close preset menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (presetMenuRef.current && !presetMenuRef.current.contains(event.target as Node)) {
+        setShowPresetMenu(false);
+        setShowSavePreset(false);
+      }
+    };
+    if (showPresetMenu) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showPresetMenu]);
 
   // Auto-unload LoRA when model changes
   useEffect(() => {
@@ -368,6 +564,30 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       if (useAdg) setUseAdg(false);
     }
   }, [loraLoaded]);
+
+  // Sync LoRA state from backend on mount (fixes desync after browser refresh)
+  useEffect(() => {
+    if (!token) return;
+    const syncLoraState = async () => {
+      try {
+        const status = await generateApi.getLoraStatus(token);
+        if (status.loaded) {
+          setLoraLoaded(true);
+          setLoraEnabled(status.active);
+          setLoraScale(status.scale ?? 1.0);
+          if (status.path) setLoraPath(status.path);
+          if (status.trigger_tag) setLoraTriggerTag(status.trigger_tag);
+          if (status.tag_position) setLoraTagPosition(status.tag_position === 'replace' ? 'prepend' : status.tag_position);
+          // Try to match to a LoRA list entry by name
+          if (status.name) setSelectedLoraName(status.name);
+          console.log('[LoRA] Synced state from backend: loaded, scale=' + status.scale);
+        }
+      } catch {
+        // Backend not available — keep defaults
+      }
+    };
+    void syncLoraState();
+  }, [token]);
 
   // LoRA API handlers
   const handleLoraToggle = async () => {
@@ -389,10 +609,28 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       } else {
         const result = await generateApi.loadLora({ lora_path: loraPath }, token);
         setLoraLoaded(true);
+        // Extract trigger_tag and tag_position from response
+        if (result?.trigger_tag) {
+          setLoraTriggerTag(result.trigger_tag);
+          console.log('LoRA trigger tag:', result.trigger_tag);
+        } else {
+          setLoraTriggerTag('');
+        }
+        // Fetch full status to get tag_position
+        try {
+          const status = await generateApi.getLoraStatus(token);
+          if (status?.tag_position) {
+            setLoraTagPosition(status.tag_position === 'replace' ? 'prepend' : status.tag_position);
+          }
+        } catch { /* ignore */ }
         console.log('LoRA loaded:', result?.message);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'LoRA operation failed';
+      let message = err instanceof Error ? err.message : 'LoRA operation failed';
+      // Make error messages more user-friendly
+      if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+        message = 'ACE-Step Gradio backend is not running. Start it first (port 8001).';
+      }
       setLoraError(message);
       console.error('LoRA error:', err);
     } finally {
@@ -409,6 +647,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     try {
       const result = await generateApi.unloadLora(token);
       setLoraLoaded(false);
+      setLoraTriggerTag('');
+      setLoraTagPosition('prepend');
       console.log('LoRA unloaded:', result?.message);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to unload LoRA';
@@ -419,16 +659,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
   };
 
-  const handleLoraScaleChange = async (newScale: number) => {
+  const handleLoraScaleChange = (newScale: number) => {
     setLoraScale(newScale);
 
     if (!token || !loraLoaded) return;
 
-    try {
-      await generateApi.setLoraScale({ scale: newScale }, token);
-    } catch (err) {
-      console.error('Failed to set LoRA scale:', err);
-    }
+    // Debounce API call to prevent artifacts from rapid slider changes
+    if (loraScaleDebounceRef.current) clearTimeout(loraScaleDebounceRef.current);
+    loraScaleDebounceRef.current = setTimeout(async () => {
+      try {
+        await generateApi.setLoraScale({ scale: newScale }, token);
+      } catch (err) {
+        console.error('Failed to set LoRA scale:', err);
+      }
+    }, 300);
   };
 
   const handleLoraEnabledToggle = async () => {
@@ -441,6 +685,126 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       console.error('Failed to toggle LoRA:', err);
       setLoraEnabled(!newEnabled); // revert on error
     }
+  };
+
+  // Model download handler
+  const handleModelDownload = async (modelName: string) => {
+    
+    setDownloadingModels(prev => new Set(prev).add(modelName));
+    setDownloadStatus(prev => ({ ...prev, [modelName]: { status: 'downloading', progress: 'Starting...' } }));
+
+    try {
+      await generateApi.downloadModel({ modelName }, token || '');
+
+      // Poll for status every 2 seconds
+      const pollInterval = setInterval(async () => {
+        try {
+          const status = await generateApi.getDownloadStatus(modelName, token || '');
+          setDownloadStatus(prev => ({ ...prev, [modelName]: { status: status.status, progress: status.progress || '', error: status.error } }));
+
+          if (status.status === 'done') {
+            clearInterval(pollInterval);
+            setDownloadingModels(prev => {
+              const next = new Set(prev);
+              next.delete(modelName);
+              return next;
+            });
+            // Refresh models list
+            await refreshModels();
+          } else if (status.status === 'error') {
+            clearInterval(pollInterval);
+            setDownloadingModels(prev => {
+              const next = new Set(prev);
+              next.delete(modelName);
+              return next;
+            });
+          }
+        } catch {
+          // Keep polling
+        }
+      }, 2000);
+    } catch (err) {
+      console.error('Model download error:', err);
+      setDownloadingModels(prev => {
+        const next = new Set(prev);
+        next.delete(modelName);
+        return next;
+      });
+      setDownloadStatus(prev => ({ ...prev, [modelName]: { status: 'error', progress: '', error: err instanceof Error ? err.message : 'Download failed' } }));
+    }
+  };
+
+  // LoRA list fetch handler
+  const fetchLoraList = async () => {
+    if (!token) return;
+    setLoraListLoading(true);
+    try {
+      const result = await generateApi.listLoras(token);
+      setLoraList(result.loras || []);
+    } catch (err) {
+      console.error('Failed to fetch LoRA list:', err);
+    } finally {
+      setLoraListLoading(false);
+    }
+  };
+
+  // When LoRA name is selected from dropdown, auto-select first variant and set loraPath
+  const handleLoraNameSelect = (name: string) => {
+    setSelectedLoraName(name);
+    const entry = loraList.find(l => l.name === name);
+    if (entry && entry.variants.length > 0) {
+      const firstVariant = entry.variants[0];
+      setSelectedLoraVariant(firstVariant.label);
+      setLoraPath(firstVariant.path);
+    } else {
+      setSelectedLoraVariant('');
+      setLoraPath('');
+    }
+  };
+
+  // When variant is selected from dropdown, update loraPath
+  const handleLoraVariantSelect = (variantLabel: string) => {
+    setSelectedLoraVariant(variantLabel);
+    const entry = loraList.find(l => l.name === selectedLoraName);
+    if (entry) {
+      const variant = entry.variants.find(v => v.label === variantLabel);
+      if (variant) {
+        setLoraPath(variant.path);
+      }
+    }
+  };
+
+  // Get variants for the currently selected LoRA
+  const selectedLoraEntry = loraList.find(l => l.name === selectedLoraName);
+
+  // LoRA browse handler
+  const handleLoraBrowse = async (dirPath?: string) => {
+    if (!token) return;
+    setLoraBrowseLoading(true);
+    try {
+      const result = await generateApi.browseLora({ dirPath: dirPath || '' }, token);
+      setLoraBrowseEntries(result.entries || []);
+      setLoraBrowseParent(result.parentPath || '');
+      setLoraBrowseCurrentPath(result.currentPath || '');
+      setLoraBrowseRelativePath(result.relativePath || result.currentPath || '');
+      if (result.error) {
+        console.warn('Browse warning:', result.error);
+      }
+    } catch (err) {
+      console.error('Browse error:', err);
+    } finally {
+      setLoraBrowseLoading(false);
+    }
+  };
+
+  const handleLoraBrowseOpen = () => {
+    setShowLoraBrowser(true);
+    handleLoraBrowse(loraPath || '');
+  };
+
+  const handleLoraBrowseSelect = (fullPath: string) => {
+    setLoraPath(fullPath);
+    setShowLoraBrowser(false);
   };
 
   // Load generation parameters from JSON file
@@ -489,11 +853,43 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   // Reuse Effect - must be after all state declarations
   useEffect(() => {
     if (initialData) {
+      const song = initialData.song;
+      const gp = song.generationParams;
       setCustomMode(true);
-      setLyrics(initialData.song.lyrics);
-      setStyle(initialData.song.style);
-      setTitle(initialData.song.title);
-      setInstrumental(initialData.song.lyrics.length === 0);
+
+      // Detect instrumental: DB stores '[Instrumental]' as lyrics for instrumental songs
+      const isInstr = !song.lyrics || song.lyrics.trim().length === 0 || /^\[instrumental\]$/i.test(song.lyrics.trim());
+      setInstrumental(isInstr);
+
+      // Lyrics: use song.lyrics unless it's instrumental placeholder, then try generationParams
+      const effectiveLyrics = isInstr ? '' : (song.lyrics || gp?.lyrics || '');
+      setLyrics(effectiveLyrics);
+
+      // Style: use song.style, fallback to generationParams.style
+      const effectiveStyle = song.style || gp?.style || '';
+      setStyle(effectiveStyle);
+
+      setTitle(song.title);
+
+      // Restore seed and other params from the original generation
+      if (gp) {
+        const reuseSeed = gp.actualSeed ?? (gp.seed >= 0 && !gp.randomSeed ? gp.seed : undefined);
+        if (reuseSeed !== undefined) {
+          setSeed(reuseSeed);
+          setRandomSeed(false);
+        }
+        if (gp.vocalLanguage) setVocalLanguage(gp.vocalLanguage);
+        if (gp.vocalGender) setVocalGender(gp.vocalGender as any);
+        if (gp.bpm !== undefined) setBpm(gp.bpm);
+        if (gp.keyScale) setKeyScale(gp.keyScale);
+        if (gp.timeSignature) setTimeSignature(gp.timeSignature);
+        if (gp.duration !== undefined && gp.duration > 0) setDuration(gp.duration);
+        if (gp.inferenceSteps) setInferenceSteps(gp.inferenceSteps);
+        if (gp.guidanceScale) setGuidanceScale(gp.guidanceScale);
+        if (gp.inferMethod) setInferMethod(gp.inferMethod as any);
+        if (gp.shift !== undefined) setShift(gp.shift);
+        if (gp.ditModel) setSelectedModel(gp.ditModel);
+      }
     }
   }, [initialData]);
 
@@ -504,6 +900,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       pendingAudioSelection.url,
       pendingAudioSelection.title
     );
+    // Auto-open advanced settings when loading source audio (cover mode)
+    if (pendingAudioSelection.target === 'source') {
+      setShowAdvanced(true);
+    }
     onAudioSelectionApplied?.();
   }, [pendingAudioSelection, onAudioSelectionApplied]);
 
@@ -686,8 +1086,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   // Format handler - uses LLM to enhance style/lyrics and auto-fill parameters
-  const handleFormat = async (target: 'style' | 'lyrics') => {
-    if (!token || !style.trim()) return;
+  const handleFormat = async (target: 'style' | 'lyrics', overrideCaption?: string) => {
+    const caption = overrideCaption || style.trim();
+    if (!token || !caption) return;
     if (target === 'style') {
       setIsFormattingStyle(true);
     } else {
@@ -695,7 +1096,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
     try {
       const result = await generateApi.formatInput({
-        caption: style,
+        caption: caption,
         lyrics: lyrics,
         bpm: bpm > 0 ? bpm : undefined,
         duration: duration > 0 ? duration : undefined,
@@ -735,6 +1136,117 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         setIsFormattingLyrics(false);
       }
     }
+  };
+
+  // AI-assisted full workflow: generate structured lyrics in Spanish, then auto-create the song
+  const handleAIGenerateAndCreate = async () => {
+    if (!token || isAIGenerating || activeJobCount >= maxConcurrentJobs) return;
+    setIsAIGenerating(true);
+
+    // Ensure we have a style/caption
+    const caption = style.trim() || 'pop, reggaeton, latino';
+    if (!style.trim()) setStyle(caption);
+
+    // Build an enhanced prompt that forces structured Spanish lyrics
+    const structuredPrompt = `${caption}. Write full song lyrics in Spanish with proper song structure sections: [Intro], [Verse 1], [Pre-Chorus], [Chorus], [Verse 2], [Pre-Chorus], [Chorus], [Bridge], [Chorus], [Outro]. Each section must have multiple lines of lyrics in Spanish. Do NOT generate instrumental-only sections. The lyrics MUST be entirely in Spanish.`;
+
+    try {
+      const result = await generateApi.formatInput({
+        caption: structuredPrompt,
+        lyrics: '', // empty so LLM generates from scratch
+        bpm: bpm > 0 ? bpm : undefined,
+        duration: duration > 0 ? duration : undefined,
+        keyScale: keyScale || undefined,
+        timeSignature: timeSignature || undefined,
+        temperature: lmTemperature,
+        topK: lmTopK > 0 ? lmTopK : undefined,
+        topP: lmTopP,
+        lmModel: lmModel || 'acestep-5Hz-lm-0.6B',
+        lmBackend: lmBackend || 'pt',
+      }, token);
+
+      if (result.lyrics) {
+        // Update lyrics with AI result
+        setLyrics(result.lyrics);
+        if (result.caption) setStyle(result.caption);
+        if (result.bpm && result.bpm > 0) setBpm(result.bpm);
+        if (result.duration && result.duration > 0) setDuration(result.duration);
+        if (result.key_scale) setKeyScale(result.key_scale);
+        if (result.time_signature) {
+          const ts = String(result.time_signature);
+          setTimeSignature(ts.includes('/') ? ts : `${ts}/4`);
+        }
+        if (result.vocal_language) setVocalLanguage(result.vocal_language);
+        setInstrumental(false);
+
+        // Auto-trigger song generation with the new lyrics
+        triggerGeneration(result.lyrics, result.caption || caption, result.vocal_language || vocalLanguage || 'es', result.bpm || bpm, result.key_scale || keyScale, result.time_signature ? (String(result.time_signature).includes('/') ? String(result.time_signature) : `${result.time_signature}/4`) : timeSignature, result.duration || duration);
+      } else {
+        // LLM returned no lyrics — fall back to normal generation without AI lyrics
+        console.warn('[AI Generate] No lyrics returned, falling back to normal generation');
+        triggerGeneration('', caption, vocalLanguage, bpm, keyScale, timeSignature, duration);
+      }
+    } catch (err) {
+      // LLM unavailable — fall back to normal generation
+      console.warn('[AI Generate] LLM error, falling back to normal generation:', err);
+      triggerGeneration('', caption, vocalLanguage, bpm, keyScale, timeSignature, duration);
+    } finally {
+      setIsAIGenerating(false);
+    }
+  };
+
+  // Helper: trigger song generation with specific params (used by AI workflow + fallback)
+  const triggerGeneration = (lyricsToUse: string, captionToUse: string, lang: string, bpmVal: number, keyVal: string, tsVal: string, durVal: number) => {
+    const styleWithGender = (() => {
+      if (!vocalGender) return captionToUse;
+      const genderHint = vocalGender === 'male' ? 'Male vocals' : 'Female vocals';
+      return `${captionToUse}\n${genderHint}`;
+    })();
+
+    let jobSeed = -1;
+    if (!randomSeed) jobSeed = seed;
+
+    onGenerate({
+      customMode: true,
+      prompt: lyricsToUse,
+      lyrics: lyricsToUse,
+      style: styleWithGender,
+      title: title || 'AI Generated',
+      ditModel: selectedModel,
+      instrumental: !lyricsToUse,
+      vocalLanguage: lang,
+      bpm: bpmVal,
+      keyScale: keyVal,
+      timeSignature: tsVal,
+      duration: durVal,
+      inferenceSteps,
+      guidanceScale,
+      batchSize,
+      randomSeed,
+      seed: jobSeed,
+      thinking,
+      enhance,
+      audioFormat,
+      inferMethod,
+      lmBackend,
+      lmModel,
+      shift,
+      lmTemperature,
+      lmCfgScale,
+      lmTopK,
+      lmTopP,
+      lmNegativePrompt,
+      referenceAudioUrl: referenceAudioUrl.trim() || undefined,
+      sourceAudioUrl: sourceAudioUrl.trim() || undefined,
+      audioCoverStrength,
+      sourceStrength,
+      taskType: (taskType === 'cover' && !sourceAudioUrl.trim()) ? 'text2music' : taskType,
+      loraPath,
+      loraScale,
+      loraEnabled,
+      loraTriggerTag,
+      loraTagPosition,
+    });
   };
 
   const openAudioModal = (target: 'reference' | 'source', tab: 'uploads' | 'created' = 'uploads') => {
@@ -864,6 +1376,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   const useReferenceTrack = (track: { audio_url: string; title?: string }) => {
+    // If vocal tab is active, trigger Demucs separation instead of setting as reference
+    if (audioTab === 'vocal') {
+      setShowAudioModal(false);
+      setPlayingTrackId(null);
+      setPlayingTrackSource(null);
+      const title = track.title ? track.title.replace(/\.[^/.]+$/, '') : 'Audio';
+      void handleSeparateStems(track.audio_url, title);
+      return;
+    }
     applyAudioTargetUrl(audioModalTarget, track.audio_url, track.title);
     setShowAudioModal(false);
     setPlayingTrackId(null);
@@ -919,8 +1440,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     return `${minutes}:${String(seconds).padStart(2, '0')}`;
   };
 
-  const toggleAudio = (target: 'reference' | 'source') => {
-    const audio = target === 'reference' ? referenceAudioRef.current : sourceAudioRef.current;
+  const toggleAudio = (target: 'reference' | 'source' | 'vocal') => {
+    const audio = target === 'reference' ? referenceAudioRef.current : target === 'source' ? sourceAudioRef.current : vocalAudioRef.current;
     if (!audio) return;
     if (audio.paused) {
       audio.play().catch(() => undefined);
@@ -951,6 +1472,81 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+  };
+
+  const handleVocalFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !token) return;
+    e.target.value = '';
+    setIsUploadingReference(true);
+    try {
+      const formData = new FormData();
+      formData.append('audio', file);
+      const response = await fetch('/api/reference-tracks', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Upload failed');
+      }
+      const data = await response.json();
+      const title = file.name.replace(/\.[^/.]+$/, '');
+      setVocalAudioUrl(data.track.audio_url);
+      setVocalAudioTitle(title);
+      setVocalTime(0);
+      setVocalDuration(0);
+      // Also set as reference if option is on
+      if (useVocalAsReference) {
+        setReferenceAudioUrl(data.track.audio_url);
+        setReferenceAudioTitle(`${title} (Vocal)`);
+        setReferenceTime(0);
+        setReferenceDuration(0);
+      }
+    } catch (err) {
+      console.error('Vocal upload error:', err);
+    } finally {
+      setIsUploadingReference(false);
+    }
+  };
+
+  const handleSeparateStems = async (audioUrl: string, title: string) => {
+    if (isSeparating) return;
+    setIsSeparating(true);
+    try {
+      const result = await trainingApi.separateStems(audioUrl, separationQuality, token || undefined);
+      if (result.success) {
+        // Set vocal audio
+        setVocalAudioUrl(result.vocals.url);
+        setVocalAudioTitle(`${title} (Vocal)`);
+        // Store instrumental URL
+        setInstrumentalAudioUrl(result.instrumental.url);
+
+        // Auto-apply based on user preferences
+        if (useVocalAsReference) {
+          setReferenceAudioUrl(result.vocals.url);
+          setReferenceAudioTitle(`${title} (Vocal)`);
+          setReferenceTime(0);
+          setReferenceDuration(0);
+        }
+        if (useInstrumentalAsSource) {
+          setSourceAudioUrl(result.instrumental.url);
+          setSourceAudioTitle(`${title} (Instrumental)`);
+          setSourceTime(0);
+          setSourceDuration(0);
+          if (taskType === 'text2music') {
+            setTaskType('cover');
+          }
+        }
+      } else {
+        console.error('Separation failed:', result.error);
+      }
+    } catch (err) {
+      console.error('Separation error:', err);
+    } finally {
+      setIsSeparating(false);
+    }
   };
 
   const handleWorkspaceDrop = (e: React.DragEvent<HTMLDivElement>) => {
@@ -1023,8 +1619,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         repaintingStart,
         repaintingEnd,
         instruction,
-        audioCoverStrength,
-        taskType,
+        audioCoverStrength: sourceAudioUrl.trim() ? sourceStrength : audioCoverStrength,
+        taskType: (taskType === 'cover' && !sourceAudioUrl.trim() && !audioCodes.trim()) ? 'text2music' : taskType,
         useAdg,
         cfgIntervalStart,
         cfgIntervalEnd,
@@ -1049,6 +1645,12 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         })(),
         isFormatCaption,
         loraLoaded,
+        loraPath: loraLoaded ? loraPath : undefined,
+        loraName: loraLoaded ? (selectedLoraName || undefined) : undefined,
+        loraScale: loraLoaded ? loraScale : undefined,
+        loraEnabled: loraLoaded ? loraEnabled : undefined,
+        loraTriggerTag: loraLoaded ? (loraTriggerTag || undefined) : undefined,
+        loraTagPosition: loraLoaded ? loraTagPosition : undefined,
       });
     }
 
@@ -1101,6 +1703,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
           onChange={(e) => handleFileSelect(e, 'source')}
           className="hidden"
         />
+        <input
+          ref={vocalInputRef}
+          type="file"
+          accept="audio/*"
+          onChange={handleVocalFileSelect}
+          className="hidden"
+        />
         <audio
           ref={referenceAudioRef}
           src={referenceAudioUrl || undefined}
@@ -1119,6 +1728,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
           onTimeUpdate={(e) => setSourceTime(e.currentTarget.currentTime)}
           onLoadedMetadata={(e) => setSourceDuration(e.currentTarget.duration || 0)}
         />
+        <audio
+          ref={vocalAudioRef}
+          src={vocalAudioUrl || undefined}
+          onPlay={() => setVocalPlaying(true)}
+          onPause={() => setVocalPlaying(false)}
+          onEnded={() => setVocalPlaying(false)}
+          onTimeUpdate={(e) => setVocalTime(e.currentTarget.currentTime)}
+          onLoadedMetadata={(e) => setVocalDuration(e.currentTarget.duration || 0)}
+        />
 
         {/* Header - Mode Toggle & Model Selection */}
         <div className="flex items-center justify-between">
@@ -1132,13 +1750,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             <div className="flex items-center bg-zinc-200 dark:bg-black/40 rounded-lg p-1 border border-zinc-300 dark:border-white/5">
               <button
                 onClick={() => setCustomMode(false)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${!customMode ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors duration-150 ${!customMode ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
               >
                 {t('simple')}
               </button>
               <button
                 onClick={() => setCustomMode(true)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${customMode ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors duration-150 ${customMode ? 'bg-white dark:bg-zinc-800 text-black dark:text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-300'}`}
               >
                 {t('custom')}
               </button>
@@ -1147,6 +1765,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             {/* Model Selection */}
             <div className="relative" ref={modelMenuRef}>
               <button
+                ref={modelButtonRef}
                 onClick={() => setShowModelMenu(!showModelMenu)}
                 className="bg-zinc-200 dark:bg-black/40 border border-zinc-300 dark:border-white/5 rounded-md px-2 py-1 text-[11px] font-medium text-zinc-900 dark:text-white hover:bg-zinc-300 dark:hover:bg-black/50 transition-colors flex items-center gap-1"
                 disabled={availableModels.length === 0}
@@ -1154,50 +1773,189 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 {availableModels.length === 0 ? '...' : getModelDisplayName(selectedModel)}
                 <ChevronDown size={10} className="text-zinc-600 dark:text-zinc-400" />
               </button>
-              
-              {/* Floating Model Menu */}
-              {showModelMenu && availableModels.length > 0 && (
-                <div className="absolute top-full right-0 mt-1 w-72 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
-                  <div className="max-h-96 overflow-y-auto custom-scrollbar">
-                    {availableModels.map(model => (
-                      <button
+            </div>
+
+            {/* Model Menu Portal — rendered outside panel to avoid clipping */}
+            {showModelMenu && availableModels.length > 0 && ReactDOM.createPortal(
+              <div
+                ref={modelMenuPortalRef}
+                className="fixed z-[9999] w-80 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl overflow-hidden"
+                style={(() => {
+                  const rect = modelButtonRef.current?.getBoundingClientRect();
+                  if (!rect) return { top: 100, left: 100 };
+                  const menuWidth = 320;
+                  let left = rect.left;
+                  if (left + menuWidth > window.innerWidth) left = window.innerWidth - menuWidth - 8;
+                  if (left < 8) left = 8;
+                  return { top: rect.bottom + 4, left };
+                })()}
+              >
+                <div className="max-h-96 overflow-y-auto custom-scrollbar">
+                  {availableModels.map(model => {
+                    const fetchedInfo = fetchedModels.find(m => m.name === model.id);
+                    const isDownloaded = fetchedInfo?.is_preloaded ?? false;
+                    const isActive = fetchedInfo?.is_active ?? false;
+                    const isDownloading = downloadingModels.has(model.id);
+                    const dlStatus = downloadStatus[model.id];
+
+                    return (
+                      <div
                         key={model.id}
-                        onClick={() => {
-                          setSelectedModel(model.id);
-                          localStorage.setItem('ace-model', model.id);
-                          // Auto-adjust parameters for non-turbo models
-                          if (!isTurboModel(model.id)) {
-                            setInferenceSteps(20);
-                            setUseAdg(true);
-                          }
-                          setShowModelMenu(false);
-                        }}
-                        className={`w-full px-4 py-3 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors border-b border-zinc-100 dark:border-zinc-800 last:border-b-0 ${
+                        className={`w-full px-4 py-3 text-left border-b border-zinc-100 dark:border-zinc-800 last:border-b-0 ${
                           selectedModel === model.id ? 'bg-zinc-50 dark:bg-zinc-800/50' : ''
-                        }`}
+                        } ${!isDownloaded && !isDownloading ? 'opacity-75' : ''}`}
                       >
                         <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-2">
+                          <div
+                            className={`flex items-center gap-2 flex-1 min-w-0 ${isDownloaded ? 'cursor-pointer hover:opacity-80' : ''}`}
+                            onClick={() => {
+                              if (!isDownloaded) return;
+                              setSelectedModel(model.id);
+                              localStorage.setItem('ace-model', model.id);
+                              if (!isTurboModel(model.id)) {
+                                setInferenceSteps(20);
+                                setUseAdg(true);
+                              }
+                              setShowModelMenu(false);
+                            }}
+                          >
                             <span className="text-sm font-semibold text-zinc-900 dark:text-white">
                               {getModelDisplayName(model.id)}
                             </span>
-                            {fetchedModels.find(m => m.name === model.id)?.is_preloaded && (
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
-                                {fetchedModels.find(m => m.name === model.id)?.is_active ? '● Active' : '● Ready'}
+                            {isDownloaded && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 shrink-0">
+                                {isActive ? '● Active' : '● Ready'}
+                              </span>
+                            )}
+                            {!isDownloaded && !isDownloading && (
+                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 shrink-0">
+                                Not downloaded
                               </span>
                             )}
                           </div>
-                          {selectedModel === model.id && (
-                            <div className="w-4 h-4 rounded-full bg-pink-500 flex items-center justify-center">
-                              <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                              </svg>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1 shrink-0">
+                            {selectedModel === model.id && isDownloaded && (
+                              <div className="w-4 h-4 rounded-full bg-pink-500 flex items-center justify-center">
+                                <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                </svg>
+                              </div>
+                            )}
+                            {!isDownloaded && !isDownloading && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleModelDownload(model.id);
+                                }}
+                                className="p-1.5 rounded-lg bg-pink-500 hover:bg-pink-600 text-white transition-colors"
+                                title={`Download ${model.id}`}
+                              >
+                                <Download size={12} />
+                              </button>
+                            )}
+                            {isDownloading && (
+                              <div className="p-1.5">
+                                <Loader2 size={12} className="animate-spin text-pink-500" />
+                              </div>
+                            )}
+                          </div>
                         </div>
                         <p className="text-xs text-zinc-500 dark:text-zinc-400">{model.id}</p>
+                        {/* Download progress */}
+                        {isDownloading && dlStatus && (
+                          <div className="mt-2">
+                            <div className="w-full bg-zinc-200 dark:bg-zinc-700 rounded-full h-1.5 overflow-hidden">
+                              <div className="bg-gradient-to-r from-pink-500 to-purple-500 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }}></div>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1 truncate">
+                              {dlStatus.progress || 'Downloading...'}
+                            </p>
+                          </div>
+                        )}
+                        {!isDownloading && dlStatus?.status === 'error' && (
+                          <p className="text-[10px] text-red-500 mt-1">{dlStatus.error || 'Download failed'}</p>
+                        )}
+                        {!isDownloading && dlStatus?.status === 'done' && (
+                          <p className="text-[10px] text-green-500 mt-1">Download complete!</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>,
+              document.body
+            )}
+
+            {/* Presets */}
+            <div className="relative" ref={presetMenuRef}>
+              <button
+                onClick={() => setShowPresetMenu(!showPresetMenu)}
+                className="bg-zinc-200 dark:bg-black/40 border border-zinc-300 dark:border-white/5 rounded-md px-2 py-1 text-[11px] font-medium text-zinc-900 dark:text-white hover:bg-zinc-300 dark:hover:bg-black/50 transition-colors flex items-center gap-1"
+                title="Presets"
+              >
+                <Settings2 size={10} />
+                <ChevronDown size={10} className="text-zinc-600 dark:text-zinc-400" />
+              </button>
+
+              {showPresetMenu && (
+                <div className="absolute top-full right-0 mt-1 w-64 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl z-50 overflow-hidden">
+                  {/* Save new preset */}
+                  <div className="p-2 border-b border-zinc-100 dark:border-zinc-800">
+                    {showSavePreset ? (
+                      <div className="flex gap-1">
+                        <input
+                          autoFocus
+                          value={presetName}
+                          onChange={(e) => setPresetName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter' && presetName.trim()) savePreset(presetName.trim()); if (e.key === 'Escape') setShowSavePreset(false); }}
+                          placeholder="Preset name..."
+                          className="flex-1 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none"
+                        />
+                        <button
+                          onClick={() => presetName.trim() && savePreset(presetName.trim())}
+                          className="px-2 py-1.5 bg-pink-500 text-white rounded-md text-xs font-semibold hover:bg-pink-600 transition-colors"
+                        >
+                          Save
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setShowSavePreset(true)}
+                        className="w-full px-3 py-2 text-left text-xs font-medium text-pink-500 hover:bg-pink-50 dark:hover:bg-pink-500/10 rounded-lg transition-colors flex items-center gap-2"
+                      >
+                        <Plus size={12} />
+                        Save current as preset
                       </button>
-                    ))}
+                    )}
+                  </div>
+
+                  {/* Preset list */}
+                  <div className="max-h-60 overflow-y-auto custom-scrollbar">
+                    {presets.length === 0 ? (
+                      <p className="text-center py-4 text-xs text-zinc-400">No presets saved</p>
+                    ) : (
+                      presets.map((preset) => (
+                        <div
+                          key={preset.name}
+                          className="flex items-center justify-between px-3 py-2.5 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors group"
+                        >
+                          <button
+                            onClick={() => loadPreset(preset)}
+                            className="flex-1 text-left min-w-0"
+                          >
+                            <span className="text-xs font-medium text-zinc-900 dark:text-white truncate block">{preset.name}</span>
+                            <span className="text-[10px] text-zinc-400">{new Date(preset.createdAt).toLocaleDateString()}</span>
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deletePreset(preset.name); }}
+                            className="shrink-0 p-1 text-zinc-300 dark:text-zinc-600 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                            title="Delete preset"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -1234,10 +1992,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 </button>
               </div>
               <textarea
+                ref={(el) => {
+                  if (el) {
+                    el.style.height = 'auto';
+                    el.style.height = Math.min(Math.max(el.scrollHeight, 128), 300) + 'px';
+                  }
+                }}
                 value={songDescription}
-                onChange={(e) => setSongDescription(e.target.value)}
+                onChange={(e) => {
+                  setSongDescription(e.target.value);
+                  const el = e.target;
+                  el.style.height = 'auto';
+                  el.style.height = Math.min(Math.max(el.scrollHeight, 128), 300) + 'px';
+                }}
                 placeholder={t('songDescriptionPlaceholder')}
-                className="w-full h-32 bg-transparent p-3 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none resize-none"
+                className="w-full min-h-[128px] max-h-[300px] bg-transparent p-3 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none resize-none overflow-y-auto"
               />
             </div>
 
@@ -1318,7 +2087,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{t('key')}</label>
                   <select
                     value={keyScale}
-                    onChange={setKeyScale}
+                    onChange={(e) => setKeyScale(e.target.value)}
                     className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                   >
                     <option value="">Auto</option>
@@ -1331,12 +2100,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{t('time')}</label>
                   <select
                     value={timeSignature}
-                    onChange={setTimeSignature}
+                    onChange={(e) => setTimeSignature(e.target.value)}
                     className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                   >
-                    <option value="">Auto</option>
-                    {TIME_SIGNATURES.filter(t => t).map(time => (
-                      <option key={time} value={time}>{time}</option>
+                    {TIME_SIGNATURES.map(ts => (
+                      <option key={ts.value} value={ts.value}>{ts.label}</option>
                     ))}
                   </select>
                 </div>
@@ -1384,24 +2152,38 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     <button
                       type="button"
                       onClick={() => setAudioTab('reference')}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150 flex items-center gap-1.5 ${
                         audioTab === 'reference'
-                          ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-white shadow-sm'
+                          ? 'bg-white dark:bg-zinc-700 text-pink-600 dark:text-pink-400 shadow-sm'
                           : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
                       }`}
                     >
+                      {referenceAudioUrl && <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" />}
                       {t('reference')}
                     </button>
                     <button
                       type="button"
                       onClick={() => setAudioTab('source')}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-all ${
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150 flex items-center gap-1.5 ${
                         audioTab === 'source'
-                          ? 'bg-white dark:bg-zinc-700 text-zinc-900 dark:text-white shadow-sm'
+                          ? 'bg-white dark:bg-zinc-700 text-emerald-600 dark:text-emerald-400 shadow-sm'
                           : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
                       }`}
                     >
+                      {sourceAudioUrl && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />}
                       {t('cover')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAudioTab('vocal')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150 flex items-center gap-1.5 ${
+                        audioTab === 'vocal'
+                          ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
+                          : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
+                      }`}
+                    >
+                      {isSeparating ? <Loader2 size={10} className="animate-spin" /> : vocalAudioUrl && <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse" />}
+                      Vocal
                     </button>
                   </div>
                 </div>
@@ -1443,7 +2225,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                           }}
                         >
                           <div
-                            className="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full transition-all relative"
+                            className="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full transition-[width] duration-150 relative"
                             style={{ width: referenceDuration ? `${Math.min(100, (referenceTime / referenceDuration) * 100)}%` : '0%' }}
                           >
                             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
@@ -1454,12 +2236,43 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     </div>
                     <button
                       type="button"
+                      onClick={() => onPrepareTraining?.({
+                        id: `ref_${Date.now()}`,
+                        title: referenceAudioTitle || 'Reference Audio',
+                        lyrics: lyrics || '',
+                        style: style || '',
+                        coverUrl: '',
+                        duration: referenceDuration ? `${Math.floor(referenceDuration / 60)}:${String(Math.floor(referenceDuration % 60)).padStart(2, '0')}` : '0:00',
+                        createdAt: new Date(),
+                        tags: [],
+                        audioUrl: referenceAudioUrl,
+                        isPublic: false,
+                      })}
+                      className="p-1.5 rounded-full hover:bg-pink-100 dark:hover:bg-pink-900/30 text-zinc-400 hover:text-pink-600 dark:hover:text-pink-400 transition-colors"
+                      title="Prepare for Training"
+                    >
+                      <Database size={14} />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => { setReferenceAudioUrl(''); setReferenceAudioTitle(''); setReferencePlaying(false); setReferenceTime(0); setReferenceDuration(0); }}
                       className="p-1.5 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-400 hover:text-zinc-600 dark:hover:text-white transition-colors"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                   </div>
+                )}
+                {audioTab === 'reference' && referenceAudioUrl && (
+                  <EditableSlider
+                    label={t('referenceStrength') || 'Reference Strength'}
+                    value={Math.round(audioCoverStrength * 100)}
+                    min={0}
+                    max={100}
+                    step={5}
+                    onChange={(v: number) => setAudioCoverStrength(Math.round(v) / 100)}
+                    helpText="How much the reference audio influences the result"
+                    title="0% = ignore reference, 100% = maximum influence from reference audio"
+                  />
                 )}
 
                 {/* Source/Cover Audio Player */}
@@ -1496,7 +2309,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                           }}
                         >
                           <div
-                            className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all relative"
+                            className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-[width] duration-150 relative"
                             style={{ width: sourceDuration ? `${Math.min(100, (sourceTime / sourceDuration) * 100)}%` : '0%' }}
                           >
                             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
@@ -1507,7 +2320,110 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     </div>
                     <button
                       type="button"
-                      onClick={() => { setSourceAudioUrl(''); setSourceAudioTitle(''); setSourcePlaying(false); setSourceTime(0); setSourceDuration(0); }}
+                      onClick={() => onPrepareTraining?.({
+                        id: `src_${Date.now()}`,
+                        title: sourceAudioTitle || 'Source Audio',
+                        lyrics: lyrics || '',
+                        style: style || '',
+                        coverUrl: '',
+                        duration: sourceDuration ? `${Math.floor(sourceDuration / 60)}:${String(Math.floor(sourceDuration % 60)).padStart(2, '0')}` : '0:00',
+                        createdAt: new Date(),
+                        tags: [],
+                        audioUrl: sourceAudioUrl,
+                        isPublic: false,
+                      })}
+                      className="p-1.5 rounded-full hover:bg-emerald-100 dark:hover:bg-emerald-900/30 text-zinc-400 hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors"
+                      title="Prepare for Training"
+                    >
+                      <Database size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setSourceAudioUrl(''); setSourceAudioTitle(''); setSourcePlaying(false); setSourceTime(0); setSourceDuration(0); if (taskType === 'cover') setTaskType('text2music'); }}
+                      className="p-1.5 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-400 hover:text-zinc-600 dark:hover:text-white transition-colors"
+                    >
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                )}
+                {audioTab === 'source' && sourceAudioUrl && (
+                  <EditableSlider
+                    label={t('coverStrength') || 'Cover Strength'}
+                    value={Math.round(sourceStrength * 100)}
+                    min={0}
+                    max={100}
+                    step={5}
+                    onChange={(v: number) => setSourceStrength(Math.round(v) / 100)}
+                    helpText="How much the source audio shapes the cover"
+                    title="0% = mostly new generation, 100% = maximum fidelity to source audio"
+                  />
+                )}
+
+                {/* Vocal Tab Content */}
+                {audioTab === 'vocal' && vocalAudioUrl && (
+                  <div className="flex items-center gap-3 p-2 rounded-lg bg-zinc-50 dark:bg-white/[0.03] border border-zinc-100 dark:border-white/5">
+                    <button
+                      type="button"
+                      onClick={() => toggleAudio('vocal')}
+                      className="relative flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-violet-500/20 hover:scale-105 transition-transform"
+                    >
+                      {vocalPlaying ? (
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/></svg>
+                      ) : (
+                        <svg className="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                      )}
+                      <span className="absolute -bottom-1 -right-1 text-[8px] font-bold bg-zinc-900 text-white px-1 py-0.5 rounded">
+                        {formatTime(vocalDuration)}
+                      </span>
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate mb-1.5">
+                        {vocalAudioTitle || 'Vocal'}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-zinc-400 tabular-nums">{formatTime(vocalTime)}</span>
+                        <div
+                          className="flex-1 h-1.5 rounded-full bg-zinc-200 dark:bg-white/10 cursor-pointer group/seek"
+                          onClick={(e) => {
+                            if (vocalAudioRef.current && vocalDuration > 0) {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const percent = (e.clientX - rect.left) / rect.width;
+                              vocalAudioRef.current.currentTime = percent * vocalDuration;
+                            }
+                          }}
+                        >
+                          <div
+                            className="h-full bg-gradient-to-r from-violet-500 to-purple-500 rounded-full transition-[width] duration-150 relative"
+                            style={{ width: vocalDuration ? `${Math.min(100, (vocalTime / vocalDuration) * 100)}%` : '0%' }}
+                          >
+                            <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-zinc-400 tabular-nums">{formatTime(vocalDuration)}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onPrepareTraining?.({
+                        id: `vocal_${Date.now()}`,
+                        title: vocalAudioTitle || 'Vocal',
+                        lyrics: lyrics || '',
+                        style: style || '',
+                        coverUrl: '',
+                        duration: vocalDuration ? `${Math.floor(vocalDuration / 60)}:${String(Math.floor(vocalDuration % 60)).padStart(2, '0')}` : '0:00',
+                        createdAt: new Date(),
+                        tags: [],
+                        audioUrl: vocalAudioUrl,
+                        isPublic: false,
+                      })}
+                      className="p-1.5 rounded-full hover:bg-violet-100 dark:hover:bg-violet-900/30 text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+                      title="Prepare for Training"
+                    >
+                      <Database size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setVocalAudioUrl(''); setVocalAudioTitle(''); setInstrumentalAudioUrl(''); setVocalPlaying(false); setVocalTime(0); setVocalDuration(0); }}
                       className="p-1.5 rounded-full hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-400 hover:text-zinc-600 dark:hover:text-white transition-colors"
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
@@ -1515,11 +2431,95 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   </div>
                 )}
 
-                {/* Action buttons */}
+                {/* Vocal Tab — Separation Controls */}
+                {audioTab === 'vocal' && (
+                  <div className="space-y-2">
+                    {/* Separation progress */}
+                    {isSeparating && (
+                      <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800/30">
+                        <Loader2 size={14} className="animate-spin text-violet-500" />
+                        <span className="text-[11px] text-violet-700 dark:text-violet-300 font-medium">
+                          Separating audio with Demucs... This may take a few minutes.
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Quality selector + Auto-apply options */}
+                    {!isSeparating && (
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Quality</label>
+                          <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
+                            {(['rapida', 'alta', 'maxima'] as const).map((q) => (
+                              <button
+                                key={q}
+                                type="button"
+                                onClick={() => setSeparationQuality(q)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  separationQuality === q
+                                    ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
+                                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
+                                }`}
+                              >
+                                {q === 'rapida' ? 'Fast' : q === 'alta' ? 'High' : 'Max'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Auto-apply toggles */}
+                        <div className="flex flex-col gap-1.5">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={useVocalAsReference}
+                              onChange={(e) => setUseVocalAsReference(e.target.checked)}
+                              className="w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 text-violet-500 focus:ring-violet-500"
+                            />
+                            <span className="text-[11px] text-zinc-600 dark:text-zinc-400">Use vocal as Reference Audio</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={useInstrumentalAsSource}
+                              onChange={(e) => setUseInstrumentalAsSource(e.target.checked)}
+                              className="w-3.5 h-3.5 rounded border-zinc-300 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500"
+                            />
+                            <span className="text-[11px] text-zinc-600 dark:text-zinc-400">Use instrumental as Source/Cover</span>
+                          </label>
+                        </div>
+
+                        {/* Instrumental indicator */}
+                        {instrumentalAudioUrl && (
+                          <div className="flex items-center gap-2 p-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-900/10 border border-emerald-200 dark:border-emerald-800/20">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                            <span className="text-[10px] text-emerald-700 dark:text-emerald-400">Instrumental available</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSourceAudioUrl(instrumentalAudioUrl);
+                                setSourceAudioTitle(`${vocalAudioTitle?.replace(' (Vocal)', '')} (Instrumental)`);
+                                setSourceTime(0);
+                                setSourceDuration(0);
+                                if (taskType === 'text2music') setTaskType('cover');
+                              }}
+                              className="ml-auto text-[10px] font-medium text-emerald-600 dark:text-emerald-400 hover:underline"
+                            >
+                              Use as Source
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Action buttons — Reference & Source tabs */}
+                {audioTab !== 'vocal' && (
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => openAudioModal(audioTab, 'uploads')}
+                    onClick={() => openAudioModal(audioTab as 'reference' | 'source', 'uploads')}
                     className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-zinc-100 dark:bg-white/5 hover:bg-zinc-200 dark:hover:bg-white/10 text-zinc-700 dark:text-zinc-300 px-3 py-2 text-xs font-medium transition-colors border border-zinc-200 dark:border-white/5"
                   >
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1541,6 +2541,34 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     {t('upload')}
                   </button>
                 </div>
+                )}
+
+                {/* Action buttons — Vocal tab */}
+                {audioTab === 'vocal' && !isSeparating && (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAudioModalTarget('reference');
+                        setShowAudioModal(true);
+                      }}
+                      disabled={isSeparating}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
+                    >
+                      <Music2 size={14} />
+                      Separate from Library
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => vocalInputRef.current?.click()}
+                      disabled={isSeparating}
+                      className="flex-1 flex items-center justify-center gap-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 hover:bg-violet-100 dark:hover:bg-violet-900/30 text-violet-700 dark:text-violet-300 px-3 py-2 text-xs font-medium transition-colors border border-violet-200 dark:border-violet-800/30 disabled:opacity-40"
+                    >
+                      <Upload size={14} />
+                      Upload Acapella
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1590,6 +2618,23 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 className={`w-full bg-transparent p-3 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none resize-none font-mono leading-relaxed ${instrumental ? 'opacity-30 cursor-not-allowed' : ''}`}
                 style={{ height: `${lyricsHeight}px` }}
               />
+              {/* AI Generate: write structured lyrics + auto-create song — only when lyrics are empty */}
+              {!instrumental && !lyrics.trim() && (
+                <div className="px-3 pb-2 pt-1">
+                  <button
+                    onClick={handleAIGenerateAndCreate}
+                    disabled={isAIGenerating || activeJobCount >= maxConcurrentJobs}
+                    className="w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-violet-500 to-pink-500 text-white hover:from-violet-600 hover:to-pink-600 shadow-sm"
+                  >
+                    {isAIGenerating ? (
+                      <><Loader2 size={13} className="animate-spin" /> Generando letra y canción...</>
+                    ) : (
+                      <><Sparkles size={13} /> Generar letra + canción con IA</>
+                    )}
+                  </button>
+                </div>
+              )}
+
               {/* Resize Handle */}
               <div
                 onMouseDown={startResizing}
@@ -1607,7 +2652,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">{t('styleOfMusic')}</span>
                     <button
                       onClick={() => setEnhance(!enhance)}
-                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-all cursor-pointer ${enhance ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300'}`}
+                      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors duration-150 cursor-pointer ${enhance ? 'bg-violet-100 dark:bg-violet-500/20 text-violet-600 dark:text-violet-400' : 'text-zinc-400 dark:text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300'}`}
                       title={t('enhanceTooltip')}
                     >
                       <Sparkles size={9} />
@@ -1641,10 +2686,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 </div>
               </div>
               <textarea
+                ref={(el) => {
+                  if (el) {
+                    el.style.height = 'auto';
+                    el.style.height = Math.min(Math.max(el.scrollHeight, 80), 200) + 'px';
+                  }
+                }}
                 value={style}
-                onChange={(e) => setStyle(e.target.value)}
+                onChange={(e) => {
+                  setStyle(e.target.value);
+                  const el = e.target;
+                  el.style.height = 'auto';
+                  el.style.height = Math.min(Math.max(el.scrollHeight, 80), 200) + 'px';
+                }}
                 placeholder={t('stylePlaceholder')}
-                className="w-full h-20 bg-transparent p-3 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none resize-none"
+                className="w-full min-h-[80px] max-h-[200px] bg-transparent p-3 text-sm text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none resize-none overflow-y-auto"
               />
               <div className="px-3 pb-3 space-y-3">
                 {/* Quick Tags */}
@@ -1741,29 +2797,164 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         {/* LORA CONTROL PANEL */}
         {customMode && (
           <>
-            <button
-              onClick={() => setShowLoraPanel(!showLoraPanel)}
-              className="w-full flex items-center justify-between px-4 py-3 bg-white dark:bg-suno-card rounded-xl border border-zinc-200 dark:border-white/5 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-white/5 transition-colors"
-            >
-              <div className="flex items-center gap-2">
-                <Sliders size={16} className="text-zinc-500" />
-                <span>LoRA</span>
-              </div>
-              <ChevronDown size={16} className={`text-zinc-500 transition-transform ${showLoraPanel ? 'rotate-180' : ''}`} />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const willOpen = !showLoraPanel;
+                  setShowLoraPanel(willOpen);
+                  if (willOpen && loraList.length === 0) fetchLoraList();
+                }}
+                className="flex-1 flex items-center justify-between px-4 py-3 bg-white dark:bg-suno-card rounded-xl border border-zinc-200 dark:border-white/5 text-sm font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-white/5 transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Sliders size={16} className="text-zinc-500" />
+                  <span>LoRA</span>
+                  {loraLoaded && (
+                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title={`Loaded: ${selectedLoraName || loraPath}`} />
+                  )}
+                </div>
+                <ChevronDown size={16} className={`text-zinc-500 transition-transform ${showLoraPanel ? 'rotate-180' : ''}`} />
+              </button>
+              {loraLoaded && (
+                <button
+                  onClick={handleLoraUnload}
+                  disabled={isLoraLoading}
+                  className="shrink-0 px-3 py-3 rounded-xl text-xs font-semibold bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/30 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors disabled:opacity-40"
+                  title="Unload all LoRA adapters"
+                >
+                  {isLoraLoading ? '...' : 'Unload'}
+                </button>
+              )}
+            </div>
 
             {showLoraPanel && (
               <div className="bg-white dark:bg-suno-card rounded-xl border border-zinc-200 dark:border-white/5 p-4 space-y-4">
-                {/* LoRA Path Input */}
-                <div className="space-y-2">
-                  <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{t('loraPath')}</label>
-                  <input
-                    type="text"
-                    value={loraPath}
-                    onChange={(e) => setLoraPath(e.target.value)}
-                    placeholder={t('loraPathPlaceholder')}
-                    className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors"
-                  />
+                {/* LoRA Selector Dropdowns */}
+                <div className="space-y-3">
+                  {/* LoRA Name Dropdown */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Select LoRA</label>
+                      <button
+                        onClick={fetchLoraList}
+                        disabled={loraListLoading}
+                        className="text-[10px] text-zinc-400 hover:text-pink-500 transition-colors flex items-center gap-1"
+                        title="Refresh LoRA list"
+                      >
+                        {loraListLoading ? <Loader2 size={10} className="animate-spin" /> : '↻'} Refresh
+                      </button>
+                    </div>
+                    <select
+                      value={selectedLoraName}
+                      onChange={(e) => handleLoraNameSelect(e.target.value)}
+                      disabled={loraLoaded}
+                      className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white [&>optgroup]:font-bold [&>optgroup]:text-zinc-500"
+                    >
+                      <option value="">-- Select a LoRA --</option>
+                      {loraList.filter(l => l.source === 'library').length > 0 && (
+                        <optgroup label="📚 Library">
+                          {loraList.filter(l => l.source === 'library').map(l => (
+                            <option key={`lib-${l.name}`} value={l.name}>
+                              {l.name}{l.metadata?.trigger_tag ? ` [${l.metadata.trigger_tag}]` : ''}{l.baseModel ? ` (${l.baseModel.split('/').pop()})` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {loraList.filter(l => l.source === 'output').length > 0 && (
+                        <optgroup label="🔧 Training Output">
+                          {loraList.filter(l => l.source === 'output').map(l => (
+                            <option key={`out-${l.name}`} value={l.name}>
+                              {l.name} ({l.variants.length} variant{l.variants.length !== 1 ? 's' : ''})
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Variant Dropdown (only when selected LoRA has multiple variants) */}
+                  {selectedLoraEntry && selectedLoraEntry.variants.length > 1 && (
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Variant / Checkpoint</label>
+                      <select
+                        value={selectedLoraVariant}
+                        onChange={(e) => handleLoraVariantSelect(e.target.value)}
+                        disabled={loraLoaded}
+                        className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                      >
+                        {selectedLoraEntry.variants.map(v => (
+                          <option key={v.label} value={v.label}>
+                            {v.label === 'final' ? '⭐ Final' : `📍 ${v.label}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* LoRA info badge */}
+                  {selectedLoraEntry && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectedLoraEntry.baseModel && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                          selectedLoraEntry.baseModel.includes('turbo')
+                            ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                            : 'bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400'
+                        }`}>
+                          🏗️ {selectedLoraEntry.baseModel.split('/').pop()}
+                        </span>
+                      )}
+                      {selectedLoraEntry.metadata?.trigger_tag && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-purple-50 dark:bg-purple-900/20 text-purple-600 dark:text-purple-400">
+                          🏷️ {selectedLoraEntry.metadata.trigger_tag as string}
+                        </span>
+                      )}
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400">
+                        {selectedLoraEntry.source === 'library' ? '📚' : '🔧'} {selectedLoraEntry.sourceDir}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Manual path input (collapsible fallback) */}
+                  <details className="group">
+                    <summary className="text-[10px] text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors select-none">
+                      Or enter path manually...
+                    </summary>
+                    <div className="flex gap-2 mt-2">
+                      <input
+                        type="text"
+                        value={loraPath}
+                        onChange={(e) => { setLoraPath(e.target.value); setSelectedLoraName(''); setSelectedLoraVariant(''); }}
+                        placeholder={t('loraPathPlaceholder')}
+                        className="flex-1 bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors"
+                      />
+                      <button
+                        onClick={handleLoraBrowseOpen}
+                        className="px-3 py-2 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-white/10 rounded-lg text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 hover:text-zinc-900 dark:hover:text-white transition-colors"
+                        title="Browse folders"
+                      >
+                        <FolderOpen size={14} />
+                      </button>
+                    </div>
+                  </details>
+
+                  {/* Current resolved path */}
+                  {loraPath && (
+                    <div className="bg-zinc-50 dark:bg-black/30 border border-zinc-200 dark:border-white/10 rounded-lg p-2.5">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">📁 Checkpoint Path</span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(loraPath); }}
+                          className="text-[10px] text-zinc-400 hover:text-pink-500 dark:hover:text-pink-400 transition-colors"
+                          title="Copy path"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-zinc-700 dark:text-zinc-300 font-mono break-all leading-relaxed" title={loraPath}>
+                        {loraPath}
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 {/* LoRA Load/Unload Toggle */}
@@ -1782,7 +2973,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     <button
                       onClick={handleLoraToggle}
                       disabled={!loraPath.trim() || isLoraLoading}
-                      className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                      className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
                         loraLoaded
                           ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-lg shadow-green-500/20 hover:from-green-600 hover:to-emerald-700'
                           : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
@@ -1794,6 +2985,36 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   {loraError && (
                     <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 px-2 py-1 rounded">
                       {loraError}
+                    </div>
+                  )}
+                  {loraLoaded && loraTriggerTag && (
+                    <div className="text-xs text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-900/20 px-2 py-1.5 rounded space-y-1.5">
+                      <div className="flex items-center gap-1">
+                        🏷️ Trigger tag: <strong>{loraTriggerTag}</strong>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-zinc-500 dark:text-zinc-400">Injection:</span>
+                        {(['prepend', 'append', 'off'] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            onClick={async () => {
+                              setLoraTagPosition(mode);
+                              try {
+                                await generateApi.setTagPosition({ tag_position: mode }, token || '');
+                              } catch (err) {
+                                console.error('Failed to set tag position:', err);
+                              }
+                            }}
+                            className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors duration-150 ${
+                              loraTagPosition === mode
+                                ? 'bg-purple-600 text-white'
+                                : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+                            }`}
+                          >
+                            {mode === 'prepend' ? '⬅️ Prepend' : mode === 'append' ? 'Append ➡️' : '🚫 Off'}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1813,17 +3034,22 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 </div>
 
                 {/* LoRA Scale Slider */}
-                <div className={!loraLoaded || !loraEnabled ? 'opacity-40 pointer-events-none' : ''}>
+                <div className={loraLoaded && !loraEnabled ? 'opacity-40 pointer-events-none' : ''}>
                   <EditableSlider
                     label={t('loraScale')}
                     value={loraScale}
                     min={0}
-                    max={1}
-                    step={0.05}
+                    max={5}
+                    step={0.1}
                     onChange={handleLoraScaleChange}
                     formatDisplay={(val) => val.toFixed(2)}
                     helpText={t('loraScaleDescription')}
                   />
+                  {loraScale > 1.0 && (
+                    <div className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
+                      ⚠️ Scale &gt; 1.0 amplifies LoRA beyond training range — experimental
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1871,9 +3097,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 onChange={(e) => setTimeSignature(e.target.value)}
                 className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
               >
-                <option value="">Auto</option>
-                {TIME_SIGNATURES.filter(t => t).map(time => (
-                  <option key={time} value={time}>{time}</option>
+                {TIME_SIGNATURES.map(ts => (
+                  <option key={ts.value} value={ts.value}>{ts.label}</option>
                 ))}
               </select>
             </div>
@@ -1944,7 +3169,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <button
                     key={count}
                     onClick={() => { setBulkCount(count); localStorage.setItem('ace-bulkCount', String(count)); }}
-                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all ${
+                    className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors duration-150 ${
                       bulkCount === count
                         ? 'bg-gradient-to-r from-orange-500 to-pink-600 text-white shadow-md'
                         : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
@@ -2194,15 +3419,27 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <div className="flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    // Convert source audio to LM codes — requires Gradio lambda (not exposed as API)
-                    // This is a placeholder: Gradio's convert_src_audio_to_codes_wrapper is not a named endpoint
-                    console.log('Convert to Codes: requires source audio upload. Use Gradio UI for this feature.');
+                  onClick={async () => {
+                    if (!sourceAudioUrl || !token) return;
+                    setIsConvertingCodes(true);
+                    try {
+                      const result = await trainingApi.convertToCodes(sourceAudioUrl, token);
+                      if (result.codes && !result.codes.startsWith('❌')) {
+                        setAudioCodes(result.codes);
+                      } else {
+                        console.error('Convert to codes failed:', result.codes || result.error);
+                      }
+                    } catch (err) {
+                      console.error('Convert to codes error:', err);
+                    } finally {
+                      setIsConvertingCodes(false);
+                    }
                   }}
-                  disabled={!sourceAudioUrl}
-                  title="Convert source audio to LM codes (requires source audio)"
-                  className="px-2 py-1 rounded text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  disabled={!sourceAudioUrl || isConvertingCodes}
+                  title="Convert source audio to LM codes (requires Gradio service)"
+                  className="px-2 py-1 rounded text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1"
                 >
+                  {isConvertingCodes && <Loader2 size={10} className="animate-spin" />}
                   Convert to Codes
                 </button>
                 <button
@@ -2235,7 +3472,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 </select>
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" title="How strongly the source audio shapes the result.">{t('audioCoverStrength')}</label>
+                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" title="How strongly the reference audio influences the style.">Ref Strength</label>
                 <input
                   type="number"
                   step="0.01"
@@ -2246,6 +3483,21 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none"
                 />
               </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" title="How strongly the source/cover audio shapes the result.">Source Strength</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="1"
+                  value={sourceStrength}
+                  onChange={(e) => setSourceStrength(Number(e.target.value))}
+                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none"
+                />
+              </div>
+              <div />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -2482,7 +3734,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   input.click();
                 }}
                 disabled={isUploadingReference || isTranscribingReference}
-                className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 dark:border-white/20 bg-zinc-50 dark:bg-white/5 px-4 py-3 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-white/10 hover:border-zinc-400 dark:hover:border-white/30 transition-all"
+                className="mt-4 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 dark:border-white/20 bg-zinc-50 dark:bg-white/5 px-4 py-3 text-sm font-medium text-zinc-700 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-white/10 hover:border-zinc-400 dark:hover:border-white/30 transition-colors duration-150"
               >
                 {isUploadingReference ? (
                   <>
@@ -2767,17 +4019,146 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
         </div>
       )}
 
+      {/* LoRA Adapter Browser Modal — rendered via portal to escape panel overflow */}
+      {showLoraBrowser && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowLoraBrowser(false)}>
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-zinc-200 dark:border-zinc-700 w-[480px] max-h-[70vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FolderSearch size={18} className="text-pink-500" />
+                <h3 className="text-sm font-bold text-zinc-900 dark:text-white">Select LoRA Adapter</h3>
+              </div>
+              <button onClick={() => setShowLoraBrowser(false)} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            
+            {/* Current path */}
+            <div className="px-4 py-2 bg-zinc-50 dark:bg-black/20 border-b border-zinc-200 dark:border-zinc-700">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 font-mono truncate" title={loraBrowseCurrentPath}>
+                {loraBrowseRelativePath || loraBrowseCurrentPath}
+              </p>
+            </div>
+
+            {/* Entries */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              {loraBrowseLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 size={24} className="animate-spin text-pink-500" />
+                </div>
+              ) : (
+                <div className="py-1">
+                  {/* Go up */}
+                  {loraBrowseParent && loraBrowseParent !== loraBrowseCurrentPath && (
+                    <button
+                      onClick={() => handleLoraBrowse(loraBrowseParent)}
+                      className="w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      <ArrowLeft size={14} className="text-zinc-400" />
+                      <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">..</span>
+                    </button>
+                  )}
+                  
+                  {loraBrowseEntries.length === 0 && (
+                    <div className="text-center py-8 text-xs text-zinc-400">Empty directory</div>
+                  )}
+
+                  {loraBrowseEntries.map((entry) => (
+                    <div
+                      key={entry.fullPath}
+                      className="w-full px-4 py-2.5 text-left flex items-center gap-3 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors group"
+                    >
+                      {entry.type === 'dir' ? (
+                        <>
+                          <div className={`shrink-0 ${entry.isAdapter ? 'text-green-500' : 'text-amber-500'}`}>
+                            {entry.isAdapter ? <Check size={14} /> : <FolderOpen size={14} />}
+                          </div>
+                          <button
+                            onClick={() => entry.isAdapter ? handleLoraBrowseSelect(entry.fullPath) : handleLoraBrowse(entry.fullPath)}
+                            className="flex-1 min-w-0 text-left"
+                          >
+                            <span className={`text-xs font-medium truncate block ${entry.isAdapter ? 'text-green-600 dark:text-green-400' : 'text-zinc-900 dark:text-white'}`}>
+                              {entry.name}
+                            </span>
+                            {entry.isAdapter && (
+                              <span className="text-[10px] text-green-500 dark:text-green-400">LoRA adapter</span>
+                            )}
+                          </button>
+                          {entry.isAdapter && (
+                            <button
+                              onClick={() => handleLoraBrowseSelect(entry.fullPath)}
+                              className="shrink-0 px-2 py-1 rounded-md text-[10px] font-bold bg-green-500 text-white hover:bg-green-600 transition-colors opacity-0 group-hover:opacity-100"
+                            >
+                              Select
+                            </button>
+                          )}
+                          {!entry.isAdapter && (
+                            <button
+                              onClick={() => handleLoraBrowse(entry.fullPath)}
+                              className="shrink-0 px-2 py-1 rounded-md text-[10px] font-bold bg-zinc-200 dark:bg-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-300 dark:hover:bg-zinc-600 transition-colors opacity-0 group-hover:opacity-100"
+                            >
+                              Open
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <div className="shrink-0 text-zinc-300 dark:text-zinc-600">
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                          </div>
+                          <span className="text-xs text-zinc-400 dark:text-zinc-500 truncate">{entry.name}</span>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer with select current path button */}
+            <div className="px-4 py-3 border-t border-zinc-200 dark:border-zinc-700 flex items-center justify-between gap-2">
+              <button
+                onClick={() => handleLoraBrowseSelect(loraBrowseCurrentPath)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors"
+              >
+                Use current folder
+              </button>
+              <button
+                onClick={() => setShowLoraBrowser(false)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-pink-500 text-white hover:bg-pink-600 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Footer Create Button */}
-      <div className="p-4 mt-auto sticky bottom-0 bg-zinc-50/95 dark:bg-suno-panel/95 backdrop-blur-sm z-10 border-t border-zinc-200 dark:border-white/5 space-y-3">
+      <div className="p-4 mt-auto sticky bottom-0 bg-zinc-50 dark:bg-suno-panel z-10 border-t border-zinc-200 dark:border-white/5 space-y-3">
+        {activeJobCount > 0 && (
+          <div className="flex items-center justify-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
+            <Loader2 size={12} className="animate-spin text-pink-500" />
+            <span>{activeJobCount} / {maxConcurrentJobs} {activeJobCount === 1 ? 'job' : 'jobs'} running</span>
+          </div>
+        )}
         <button
           onClick={handleGenerate}
-          className="w-full h-12 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-all transform active:scale-[0.98] bg-gradient-to-r from-orange-500 to-pink-600 text-white shadow-lg hover:brightness-110"
-          disabled={isGenerating || !isAuthenticated}
+          className={`w-full h-12 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-[filter] duration-150 transform active:scale-[0.98] shadow-lg hover:brightness-110 ${
+            activeJobCount >= maxConcurrentJobs
+              ? 'bg-zinc-400 dark:bg-zinc-600 text-white/70 cursor-not-allowed'
+              : 'bg-gradient-to-r from-orange-500 to-pink-600 text-white'
+          }`}
+          disabled={activeJobCount >= maxConcurrentJobs || !isAuthenticated || isSeparating}
         >
           <Sparkles size={18} />
           <span>
-            {isGenerating 
-              ? t('generating')
+            {isSeparating
+              ? 'Separating audio...'
+              : activeJobCount >= maxConcurrentJobs
+              ? `Queue full (${maxConcurrentJobs}/${maxConcurrentJobs})`
               : bulkCount > 1
                 ? `${t('createButton')} ${bulkCount} ${t('jobs')} (${bulkCount * batchSize} ${t('variations')})`
                 : `${t('createButton')}${batchSize > 1 ? ` (${batchSize} ${t('variations')})` : ''}`

@@ -366,7 +366,7 @@ router.patch('/:id', authMiddleware, async (req: AuthenticatedRequest, res: Resp
     const values: unknown[] = [];
     let paramCount = 1;
 
-    const allowedFields = ['title', 'lyrics', 'style', 'caption', 'cover_url', 'is_public', 'tags'];
+    const allowedFields = ['title', 'lyrics', 'style', 'caption', 'cover_url', 'is_public', 'tags', 'bpm', 'key_scale', 'time_signature'];
     for (const field of allowedFields) {
       if (req.body[field] !== undefined) {
         updates.push(`${field} = $${paramCount}`);
