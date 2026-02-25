@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database } from 'lucide-react';
+import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic } from 'lucide-react';
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
@@ -2428,6 +2428,50 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     >
                       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
+                  </div>
+                )}
+
+                {/* Vocal → Generate flow: one-click setup */}
+                {audioTab === 'vocal' && vocalAudioUrl && (
+                  <div className="space-y-2">
+                    {/* Status: vocal armed for generation */}
+                    {sourceAudioUrl === vocalAudioUrl && taskType === 'cover' ? (
+                      <div className="flex items-center gap-2 p-2 rounded-lg bg-violet-100 dark:bg-violet-900/30 border border-violet-300 dark:border-violet-700/50">
+                        <span className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
+                        <span className="text-[11px] font-medium text-violet-800 dark:text-violet-200">
+                          Vocal armed — Hit Generate to create a new song with this voice
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSourceAudioUrl('');
+                            setSourceAudioTitle('');
+                            setTaskType('text2music');
+                          }}
+                          className="ml-auto text-[10px] font-medium text-violet-500 hover:text-violet-700 dark:hover:text-violet-300"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSourceAudioUrl(vocalAudioUrl);
+                          setSourceAudioTitle(`${vocalAudioTitle || 'Vocal'} (Voice)`);
+                          setSourceTime(0);
+                          setSourceDuration(0);
+                          setTaskType('cover');
+                        }}
+                        className="w-full flex items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white px-4 py-2.5 text-xs font-bold transition-all shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40"
+                      >
+                        <Mic size={14} />
+                        Use This Vocal for Generation
+                      </button>
+                    )}
+                    <p className="text-[10px] text-zinc-400 dark:text-zinc-500 leading-relaxed">
+                      Sets this vocal as the source audio in Cover mode. ACE-Step will generate a new instrumental that matches the voice melody and timing. Adjust Cover Strength in the Source tab to control how closely it follows the vocal.
+                    </p>
                   </div>
                 )}
 
