@@ -55,14 +55,10 @@ build/
 *.safetensors
 *.bin
 checkpoints/
-lora_output/
+lora_output*/
 lora_library/
 models/
 pretrained/
-ACE-Step-1.5_/checkpoints/
-ACE-Step-1.5_/lora_output/
-ACE-Step-1.5_/lora_library/
-ACE-Step-1.5_/models/
 Side-Step/
 LORAPRO/
 
@@ -79,15 +75,30 @@ songs/
 uploads/
 outputs/
 generated/
+
+# ace-step-ui generated content
 ace-step-ui/public/songs/
 ace-step-ui/public/uploads/
 ace-step-ui/public/outputs/
+ace-step-ui/public/audio/
+ace-step-ui/server/public/audio/
+
+# ACE-Step-1.5_ heavy directories
+ACE-Step-1.5_/python_embeded/
+ACE-Step-1.5_/env/
+ACE-Step-1.5_/.venv/
+ACE-Step-1.5_/venv/
+ACE-Step-1.5_/output/
+ACE-Step-1.5_/.cache/
+ACE-Step-1.5_/wandb/
+ACE-Step-1.5_/runs/
+ACE-Step-1.5_/preprocessed_tensors/
+ACE-Step-1.5_/data_audio/
 
 # Datasets
 datasets/
 preprocessed_tensors/
 data_audio/
-ACE-Step-1.5_/datasets/
 
 # Logs
 logs/
@@ -95,6 +106,9 @@ logs/
 runs/
 tensorboard/
 wandb/
+
+# Tensorboard event files
+events.out.tfevents.*
 
 # Database
 *.db
@@ -112,6 +126,9 @@ Thumbs.db
 .DS_Store
 desktop.ini
 
+# Old submodule git history backups
+.git_backup/
+
 # Problematic folder with trailing space
 ACE-Step-1.5_ /
 
@@ -121,3 +138,15 @@ ACE-Step-1.5_ /
 *.tar.gz
 *.rar
 *.7z
+
+# Images (large)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.tiff
+*.ico
+*.npy
+*.npz
