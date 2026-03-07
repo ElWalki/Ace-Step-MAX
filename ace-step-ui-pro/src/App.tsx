@@ -33,18 +33,6 @@ export default function App() {
   const { t } = useTranslation();
   const { user, token, isLoading, needsLogin } = useAuth();
 
-  // Show login screen if needed
-  if (isLoading) {
-    return (
-      <div className="fixed inset-0 bg-surface-950 flex items-center justify-center">
-        <div className="animate-pulse text-accent-400 text-sm">Loading...</div>
-      </div>
-    );
-  }
-  if (needsLogin || !user) {
-    return <LoginScreen />;
-  }
-
   // ─── View ───
   const [currentView, setCurrentView] = useState<View>('create');
 
@@ -538,6 +526,18 @@ export default function App() {
         return null;
     }
   };
+
+  // Show login/loading screen if auth not ready (after all hooks)
+  if (isLoading) {
+    return (
+      <div className="fixed inset-0 bg-surface-950 flex items-center justify-center">
+        <div className="animate-pulse text-accent-400 text-sm">Loading...</div>
+      </div>
+    );
+  }
+  if (needsLogin || !user) {
+    return <LoginScreen />;
+  }
 
   return (
     <div className="h-screen flex flex-col bg-surface-0 text-surface-900 overflow-hidden">
