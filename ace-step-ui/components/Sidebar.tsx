@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Library, Disc, Search, LogIn, LogOut, Sun, Moon, GraduationCap, Newspaper, Power, RotateCcw, Loader2 } from 'lucide-react';
+import { Library, Disc, Search, LogIn, LogOut, Sun, Moon, GraduationCap, Newspaper, Power, RotateCcw, Loader2, Piano, Mic, X } from 'lucide-react';
 import { View } from '../types';
 import { useI18n } from '../context/I18nContext';
 
@@ -16,6 +16,10 @@ interface SidebarProps {
   onToggle?: () => void;
   onShutdown?: () => void;
   onRestart?: () => void;
+  onOpenChords?: () => void;
+  onOpenMic?: () => void;
+  infoText?: { title: string; content: string } | null;
+  onDismissInfo?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -31,6 +35,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggle,
   onShutdown,
   onRestart,
+  onOpenChords,
+  onOpenMic,
+  infoText,
+  onDismissInfo,
 }) => {
   const { t } = useI18n();
   const [stopCountdown, setStopCountdown] = useState<number | null>(null);
@@ -92,7 +100,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="px-3 mb-8 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div
-            className="w-10 h-10 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center cursor-pointer shadow-lg hover:scale-105 transition-transform flex-shrink-0"
+            className="w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center cursor-pointer shadow-lg hover:scale-105 transition-transform flex-shrink-0"
             onClick={() => onNavigate('create')}
             title={t('aceStepUI')}
           >
@@ -161,6 +169,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
           isExpanded={isOpen}
         />
 
+        {/* Chord Progression Tool */}
+        <div className="mt-1 pt-1 border-t border-zinc-200/10 dark:border-white/5">
+          <NavItem
+            icon={<Piano size={20} />}
+            label="Acordes"
+            active={false}
+            onClick={() => onOpenChords?.()}
+            isExpanded={isOpen}
+          />
+          <NavItem
+            icon={<Mic size={20} />}
+            label="Grabar Voz"
+            active={false}
+            onClick={() => onOpenMic?.()}
+            isExpanded={isOpen}
+          />
+        </div>
+
+        {/* Info Panel — shown when an info icon is clicked in CreatePanel */}
+        {isOpen && infoText && (
+          <div className="mx-1 mt-1 border border-violet-500/30 bg-zinc-900/90 rounded-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="flex items-center justify-between px-3 py-1.5 bg-violet-500/10 border-b border-violet-500/20">
+              <span className="text-[11px] font-bold text-violet-300 truncate">{infoText.title}</span>
+              <button
+                onClick={() => onDismissInfo?.()}
+                className="w-5 h-5 flex items-center justify-center rounded hover:bg-white/10 text-zinc-400 hover:text-white transition-colors flex-shrink-0"
+              >
+                <X size={12} />
+              </button>
+            </div>
+            <div className="max-h-48 overflow-y-auto p-3 text-[10px] text-zinc-300 leading-relaxed scrollbar-thin scrollbar-thumb-zinc-700 scrollbar-track-transparent"
+              dangerouslySetInnerHTML={{ __html: infoText.content }}
+            />
+          </div>
+        )}
+
         <div className="mt-auto flex flex-col gap-2">
           {/* Server Controls — icon-only */}
           <div className="flex items-center justify-center gap-1">
@@ -227,7 +271,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 `}
                 title={`${user.username} - ${t('settings')}`}
               >
-                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold border border-white/20 overflow-hidden flex-shrink-0">
+                <div className="w-6 h-6 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-white text-xs font-bold border border-white/20 overflow-hidden flex-shrink-0">
                   {user.avatar_url ? (
                     <img src={user.avatar_url} alt={user.username} className="w-full h-full object-cover" />
                   ) : (
@@ -259,7 +303,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={onLogin}
               className={`
-                w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 dark:text-zinc-400 hover:text-pink-500 hover:bg-zinc-100 dark:hover:bg-white/5
+                w-full rounded-xl flex items-center gap-3 transition-colors duration-150 text-zinc-500 dark:text-zinc-400 hover:text-violet-500 hover:bg-zinc-100 dark:hover:bg-white/5
                 ${isOpen ? 'px-3 py-2.5 justify-start' : 'aspect-square justify-center'}
               `}
               title={t('signIn')}
@@ -295,7 +339,7 @@ const NavItem: React.FC<NavItemProps> = ({ icon, label, active, onClick, isExpan
     `}
     title={label}
   >
-    {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-pink-500 rounded-r-full"></div>}
+    {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-1 bg-violet-500 rounded-r-full"></div>}
     <div className="flex-shrink-0">{icon}</div>
     {isExpanded && (
       <span className="text-sm font-medium whitespace-nowrap">{label}</span>

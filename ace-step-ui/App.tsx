@@ -25,6 +25,11 @@ import { SearchPage } from './components/SearchPage';
 import { TrainingPanel } from './components/TrainingPanel';
 import { NewsPage } from './components/NewsPage';
 import { ConfirmDialog } from './components/ConfirmDialog';
+import { ChatAssistant } from './components/ChatAssistant';
+import { ChordModal } from './components/ChordProgressionEditor';
+import { MicRecorderModal, RecordingMode } from './components/MicRecorderModal';
+import { ParsedMusicRequest } from './services/chatService';
+import { uiBridge } from './services/uiBridge';
 
 
 function AppContent() {
@@ -88,6 +93,19 @@ function AppContent() {
   const [showRightSidebar, setShowRightSidebar] = useState(true);
   const [showLeftSidebar, setShowLeftSidebar] = useState(true);
   const [pendingAudioSelection, setPendingAudioSelection] = useState<{ target: 'reference' | 'source'; url: string; title?: string } | null>(null);
+  const [pendingLyrics, setPendingLyrics] = useState<{ text: string; mode: 'overwrite' | 'append' } | null>(null);
+  // Chat: last completed generated song for inline playback
+  const [lastGeneratedSong, setLastGeneratedSong] = useState<Song | null>(null);
+  // Generated audio codes for Códigos tab
+  const [generatedCodes, setGeneratedCodes] = useState<Array<{
+    songId: string;
+    title: string;
+    codes: string;
+    codeCount: number;
+    extractedAt: Date;
+  }>>([]);
+  // Sidebar info panel
+  const [sidebarInfoText, setSidebarInfoText] = useState<{ title: string; content: string } | null>(null);
 
   // Mobile UI Toggle
   const [mobileShowList, setMobileShowList] = useState(false);
@@ -103,6 +121,10 @@ function AppContent() {
 
   // Settings Modal
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+
+  // Chord Modal
+  const [showChordModal, setShowChordModal] = useState(false);
+  const [showMicRecorder, setShowMicRecorder] = useState(false);
 
   // Prepare Training Modal
   const [prepareTrainingSong, setPrepareTrainingSong] = useState<Song | null>(null);
@@ -758,6 +780,36 @@ function AppContent() {
           cleanupJob(jobId, tempId);
           await refreshSongsList();
 
+          // Capture the completed song for chat inline playback
+          // After refresh, the newest non-generating song is the result
+          let completedSongRef: Song | null = null;
+          setSongs(prev => {
+            const completedSong = prev.find(s => !s.isGenerating && s.audioUrl);
+            if (completedSong) {
+              setLastGeneratedSong(completedSong);
+              completedSongRef = completedSong;
+            }
+            return prev;
+          });
+
+          // Auto-extract audio codes in the background (outside setSongs to avoid stale refs)
+          if (completedSongRef && (completedSongRef as Song).audioUrl && token) {
+            const song = completedSongRef as Song;
+            generateApi.extractAudioCodes(song.audioUrl!, token)
+              .then(codesResult => {
+                if (codesResult?.audioCodes) {
+                  setGeneratedCodes(prev => [{
+                    songId: song.id,
+                    title: song.title || 'Untitled',
+                    codes: codesResult.audioCodes,
+                    codeCount: codesResult.codeCount || codesResult.audioCodes.split(/\s+/).length,
+                    extractedAt: new Date(),
+                  }, ...prev].slice(0, 50));
+                }
+              })
+              .catch(() => { /* silent — codes are optional */ });
+          }
+
           if (window.innerWidth < 768) {
             setMobileShowList(true);
           }
@@ -923,6 +975,261 @@ function AppContent() {
       showToast(t('generationFailed'), 'error');
     }
   };
+
+  // Chat Assistant: Convert ParsedMusicRequest → GenerationParams and trigger generation
+  const handleChatGenerateWithParams = useCallback((params: ParsedMusicRequest) => {
+    const genParams: GenerationParams = {
+      customMode: true,
+      prompt: params.style || '',
+      lyrics: params.lyrics || '',
+      style: params.style || '',
+      title: params.title || 'Chat Generation',
+      instrumental: params.instrumental || false,
+      vocalLanguage: params.vocalLanguage,
+      duration: params.duration,
+      bpm: params.bpm,
+      keyScale: params.keyScale,
+      timeSignature: params.timeSignature,
+      inferenceSteps: params.inferenceSteps,
+      guidanceScale: params.guidanceScale,
+      batchSize: 1,
+      randomSeed: true,
+      seed: -1,
+      thinking: params.thinking,
+      audioFormat: 'mp3',
+      inferMethod: 'ode',
+      shift: 3,
+      lmTemperature: 0.7,
+      lmCfgScale: 1.0,
+      lmTopK: 100,
+      lmTopP: 0.95,
+      lmNegativePrompt: '',
+    };
+    handleGenerate(genParams);
+  }, [handleGenerate]);
+
+  // Chat Assistant: Apply parsed params to CreatePanel via UIBridge (direct state mutation)
+  const handleChatApplyParams = useCallback((params: ParsedMusicRequest) => {
+    // Use UIBridge for direct state mutation (if connected)
+    if (uiBridge.isConnected) {
+      const bridgeParams: Record<string, any> = {};
+      if (params.title !== undefined) bridgeParams.title = params.title;
+      if (params.lyrics !== undefined) bridgeParams.lyrics = params.lyrics;
+      if (params.style !== undefined) bridgeParams.style = params.style;
+      if (params.bpm !== undefined) bridgeParams.bpm = params.bpm;
+      if (params.keyScale !== undefined) bridgeParams.keyScale = params.keyScale;
+      if (params.timeSignature !== undefined) bridgeParams.timeSignature = params.timeSignature;
+      if (params.vocalLanguage !== undefined) bridgeParams.vocalLanguage = params.vocalLanguage;
+      if (params.instrumental !== undefined) bridgeParams.instrumental = params.instrumental;
+      if (params.duration !== undefined) bridgeParams.duration = params.duration;
+      if (params.inferenceSteps !== undefined) bridgeParams.inferenceSteps = params.inferenceSteps;
+      if (params.guidanceScale !== undefined) bridgeParams.guidanceScale = params.guidanceScale;
+      if (params.thinking !== undefined) bridgeParams.thinking = params.thinking;
+      if (params.enhance !== undefined) bridgeParams.enhance = params.enhance;
+      if (params.shift !== undefined) bridgeParams.shift = params.shift;
+      if (params.inferMethod !== undefined) bridgeParams.inferMethod = params.inferMethod;
+      if (params.audioFormat !== undefined) bridgeParams.audioFormat = params.audioFormat;
+      if (params.taskType !== undefined) bridgeParams.taskType = params.taskType;
+      if (params.selectedModel !== undefined) bridgeParams.selectedModel = params.selectedModel;
+      if (params.lmModel !== undefined) bridgeParams.lmModel = params.lmModel;
+      if (params.seed !== undefined) bridgeParams.seed = params.seed;
+      if (params.randomSeed !== undefined) bridgeParams.randomSeed = params.randomSeed;
+      if (params.vocalGender !== undefined) bridgeParams.vocalGender = params.vocalGender;
+
+      if (Object.keys(bridgeParams).length > 0) {
+        uiBridge.dispatch({ type: 'set', params: bridgeParams as any });
+      }
+      setCurrentView('create');
+      showToast('✅ Parameters applied via bridge!', 'success');
+      return;
+    }
+
+    // Fallback: use reuseData mechanism
+    const fakeSong: Song = {
+      id: `chat_${Date.now()}`,
+      title: params.title || '',
+      lyrics: params.lyrics || '',
+      style: params.style || '',
+      coverUrl: '',
+      duration: params.duration ? `${Math.floor(params.duration / 60)}:${(params.duration % 60).toString().padStart(2, '0')}` : '',
+      createdAt: new Date(),
+      tags: [],
+      isPublic: true,
+      generationParams: {
+        vocalLanguage: params.vocalLanguage,
+        bpm: params.bpm,
+        keyScale: params.keyScale,
+        timeSignature: params.timeSignature,
+        duration: params.duration,
+        inferenceSteps: params.inferenceSteps,
+        guidanceScale: params.guidanceScale,
+        instrumental: params.instrumental,
+        thinking: params.thinking,
+      },
+    };
+    setReuseData({ song: fakeSong, timestamp: Date.now() });
+    setCurrentView('create');
+    showToast('✅ Parameters applied from chat!', 'success');
+  }, []);
+
+  // Chat Assistant: Set lyrics in CreatePanel
+  const handleChatSetLyrics = useCallback((lyrics: string, mode: 'overwrite' | 'append') => {
+    setPendingLyrics({ text: lyrics, mode });
+    setCurrentView('create');
+  }, []);
+
+  // Chord Modal: Full apply — text injection + automatic reference audio upload
+  const handleChordApplyFull = useCallback(async (data: {
+    styleTag: string; lyricsTag: string; description: string;
+    bpmTag?: number; keyScaleTag: string;
+    referenceBlob: Blob; referenceTitle: string;
+  }) => {
+    if (!uiBridge.isConnected) return;
+
+    const currentState = uiBridge.getState();
+    const currentStyle = currentState?.style || '';
+
+    // 1) Clean previous chord tags and build new style
+    const cleanedStyle = currentStyle
+      .replace(/,?\s*[A-G][#b]?\s*(Major|Minor)\s+key,?\s*chord progression[^,]*/gi, '')
+      .replace(/,?\s*\[?[A-G][#b]?m?\s*[-–]\s*[A-G].*chord progression\]?/gi, '')
+      .trim();
+    const newStyle = cleanedStyle ? `${cleanedStyle}, ${data.styleTag}` : data.styleTag;
+
+    const params: Record<string, any> = { style: newStyle };
+    if (data.bpmTag && data.bpmTag > 0) params.bpm = data.bpmTag;
+    if (data.keyScaleTag) params.keyScale = data.keyScaleTag;
+
+    // 2) Inject chord tags into lyrics header
+    const currentLyrics = currentState?.lyrics || '';
+    if (currentLyrics.trim() && !currentLyrics.includes('[Chord Progression:')) {
+      params.lyrics = `${data.lyricsTag}\n${currentLyrics}`;
+    } else if (!currentLyrics.trim()) {
+      params.lyrics = data.lyricsTag;
+    }
+
+    // 3) Read auto-reference setting from localStorage (ChordModal persists it)
+    const useAutoRef = localStorage.getItem('chord-auto-ref') !== 'false';
+    const refStrength = parseFloat(localStorage.getItem('chord-ref-strength') || '0.5');
+
+    if (useAutoRef && token) {
+      // Upload rendered WAV as reference + source audio
+      try {
+        const file = new File([data.referenceBlob], `${data.referenceTitle.replace(/\s+/g, '_')}.wav`, { type: 'audio/wav' });
+        const result = await generateApi.uploadAudio(file, token);
+        const titleLabel = `🎹 ${data.referenceTitle}`;
+        params.referenceAudioUrl = result.url;     // timbre conditioning
+        params.referenceAudioTitle = titleLabel;
+        params.sourceAudioUrl = result.url;        // structural/melodic conditioning
+        params.sourceAudioTitle = titleLabel;
+        params.audioCoverStrength = refStrength;
+        params.taskType = 'cover';                 // enable cover conditioning pipeline
+
+        // Apply base params immediately
+        uiBridge.dispatch({ type: 'set', params: params as any });
+        setCurrentView('create');
+        showToast(`🎹 Acordes aplicados + referencia: ${data.description} — extrayendo códigos...`, 'success');
+
+        // Background extraction of semantic codes
+        try {
+          const codesResult = await generateApi.extractAudioCodes(result.url, token);
+          if (codesResult.audioCodes && codesResult.codeCount > 0) {
+            uiBridge.dispatch({ type: 'set', params: { audioCodes: codesResult.audioCodes } as any });
+            showToast(`🧠 ${codesResult.codeCount} códigos semánticos extraídos de acordes`, 'success');
+          }
+        } catch (codeErr) {
+          console.warn('Chord audio code extraction failed (using timbre-only):', codeErr);
+        }
+        return; // already dispatched above
+      } catch (err) {
+        console.warn('Chord reference audio upload failed (continuing with text-only):', err);
+      }
+    }
+
+    // 4) Apply everything in one UIBridge dispatch (no auto-ref path)
+    uiBridge.dispatch({ type: 'set', params: params as any });
+    setCurrentView('create');
+    showToast(`🎹 Acordes aplicados: ${data.description}`, 'success');
+  }, [token]);
+
+  // ---------------------------------------------------------------------------
+  // Mic Recorder → upload recording as reference + source audio with semantic codes
+  // ---------------------------------------------------------------------------
+  const handleMicApply = useCallback(async (data: {
+    blob: Blob;
+    title: string;
+    mode: RecordingMode;
+    strength: number;
+    lyrics: string;
+    audioCodes?: string;
+  }) => {
+    if (!token) {
+      showToast('Inicia sesión para usar grabaciones', 'error');
+      return;
+    }
+
+    try {
+      const safeName = data.title.replace(/[^a-zA-Z0-9_\-]/g, '_');
+      const file = new File([data.blob], `${safeName}.wav`, { type: 'audio/wav' });
+      const result = await generateApi.uploadAudio(file, token);
+
+      const titleLabel = `🎤 ${data.title}`;
+      const params: Record<string, any> = {
+        referenceAudioUrl: result.url,     // timbre conditioning
+        referenceAudioTitle: titleLabel,
+        sourceAudioUrl: result.url,        // structural/melodic conditioning
+        sourceAudioTitle: titleLabel,
+        audioCoverStrength: data.strength,
+        taskType: 'cover',                 // enable cover conditioning pipeline
+      };
+
+      // Inject lyrics from the mic recorder lyrics editor if provided
+      if (data.lyrics) {
+        params.lyrics = data.lyrics;
+      }
+
+      // Use pre-extracted audio codes if available (from MicRecorder processing step)
+      if (data.audioCodes) {
+        params.audioCodes = data.audioCodes;
+      }
+
+      uiBridge.dispatch({ type: 'set', params: params as any });
+      setCurrentView('create');
+      setShowMicRecorder(false);
+
+      if (data.audioCodes) {
+        const codeCount = data.audioCodes.split(' ').length;
+        showToast(
+          data.mode === 'reference'
+            ? `🎤 Referencia aplicada: ${data.title} — ${codeCount} códigos semánticos`
+            : `🎤 Cover vocal aplicado: ${data.title} — ${codeCount} códigos semánticos`,
+          'success'
+        );
+      } else {
+        // No pre-extracted codes — extract in background
+        showToast(
+          data.mode === 'reference'
+            ? `🎤 Referencia aplicada: ${data.title} — extrayendo códigos semánticos...`
+            : `🎤 Cover vocal aplicado: ${data.title} — extrayendo códigos semánticos...`,
+          'success'
+        );
+
+        try {
+          const codesResult = await generateApi.extractAudioCodes(result.url, token);
+          if (codesResult.audioCodes && codesResult.codeCount > 0) {
+            uiBridge.dispatch({ type: 'set', params: { audioCodes: codesResult.audioCodes } as any });
+            showToast(`🧠 ${codesResult.codeCount} códigos semánticos extraídos — melodía/ritmo fijados`, 'success');
+          }
+        } catch (codeErr) {
+          console.warn('Audio code extraction failed (using timbre-only reference):', codeErr);
+        }
+      }
+    } catch (err: any) {
+      console.error('Mic recording upload failed:', err);
+      showToast(`Error al subir grabación: ${err?.message || 'fallo'}`, 'error');
+      throw err; // re-throw so MicRecorderModal shows error status
+    }
+  }, [token]);
 
   // Resume active jobs on refresh so progress keeps updating
   useEffect(() => {
@@ -1385,7 +1692,10 @@ function AppContent() {
                 createdSongs={songs}
                 pendingAudioSelection={pendingAudioSelection}
                 onAudioSelectionApplied={() => setPendingAudioSelection(null)}
+                pendingLyrics={pendingLyrics}
+                onLyricsApplied={() => setPendingLyrics(null)}
                 onPrepareTraining={(song: Song) => setPrepareTrainingSong(song)}
+                onShowInfo={(info) => setSidebarInfoText(info)}
               />
             </div>
 
@@ -1463,7 +1773,7 @@ function AppContent() {
   };
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-pink-500/30 transition-colors duration-300">
+    <div className="flex flex-col h-screen bg-white dark:bg-suno-DEFAULT text-zinc-900 dark:text-white font-sans antialiased selection:bg-violet-500/30 transition-colors duration-300">
       <div className="flex-1 flex overflow-hidden">
         <Sidebar
           currentView={currentView}
@@ -1513,6 +1823,10 @@ function AppContent() {
               setTimeout(() => clearInterval(poll), 60000);
             } catch { /* server already down */ }
           }}
+          onOpenChords={() => setShowChordModal(true)}
+          onOpenMic={() => setShowMicRecorder(true)}
+          infoText={sidebarInfoText}
+          onDismissInfo={() => setSidebarInfoText(null)}
         />
 
         <main className="flex-1 flex overflow-hidden relative">
@@ -1632,6 +1946,41 @@ function AppContent() {
           </div>
         </div>
       )}
+
+      {/* Chat Assistant Floating UI */}
+      <ChatAssistant
+        onApplyParams={handleChatApplyParams}
+        onGenerateWithParams={handleChatGenerateWithParams}
+        onSetLyrics={handleChatSetLyrics}
+        isGenerating={isGenerating}
+        lastGeneratedSong={lastGeneratedSong}
+        generatedCodes={generatedCodes}
+        currentSong={currentSong}
+        isPlaying={isPlaying}
+        currentTime={currentTime}
+        duration={duration}
+        onPlaySong={playSong}
+        onTogglePlay={togglePlay}
+        onSeek={handleSeek}
+        songs={songs}
+      />
+
+      {/* Chord Progression Modal — opened from Sidebar */}
+      <ChordModal
+        isOpen={showChordModal}
+        onClose={() => setShowChordModal(false)}
+        onApplyFull={handleChordApplyFull}
+        projectBpm={uiBridge.isConnected ? (uiBridge.getState()?.bpm || 0) : 0}
+      />
+
+      {/* Mic Recorder Modal — opened from Sidebar */}
+      <MicRecorderModal
+        isOpen={showMicRecorder}
+        onClose={() => setShowMicRecorder(false)}
+        onApply={handleMicApply}
+        initialLyrics={uiBridge.getState()?.lyrics || ''}
+        token={token || undefined}
+      />
 
       <ConfirmDialog
         isOpen={confirmDialog !== null}

@@ -126,28 +126,28 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'all' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
                     All Songs
-                    {activeTab === 'all' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
+                    {activeTab === 'all' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-violet-500 rounded-full"></div>}
                  </button>
                  <button 
                     onClick={() => setActiveTab('liked')}
                     className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'liked' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
                     {t('likedSongs')}
-                    {activeTab === 'liked' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
+                    {activeTab === 'liked' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-violet-500 rounded-full"></div>}
                  </button>
                  <button 
                     onClick={() => setActiveTab('playlists')}
                     className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'playlists' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
                     {t('playlists')}
-                    {activeTab === 'playlists' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
+                    {activeTab === 'playlists' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-violet-500 rounded-full"></div>}
                  </button>
                  <button 
                     onClick={() => setActiveTab('uploads')}
                     className={`pb-3 text-sm font-bold transition-colors relative ${activeTab === 'uploads' ? 'text-zinc-900 dark:text-white' : 'text-zinc-500 hover:text-zinc-900 dark:hover:text-white'}`}
                  >
                     Uploads
-                    {activeTab === 'uploads' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-green-500 rounded-full"></div>}
+                    {activeTab === 'uploads' && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-violet-500 rounded-full"></div>}
                  </button>
              </div>
 
@@ -212,8 +212,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
              )}
              {activeTab === 'liked' && (
                  <div>
-                    <div className="bg-gradient-to-b from-indigo-500/10 to-zinc-50 dark:from-indigo-800/50 dark:to-zinc-900/50 p-6 rounded-xl flex items-end gap-6 mb-8 cursor-pointer hover:bg-zinc-100 dark:hover:bg-white/5 transition-colors group border border-zinc-200 dark:border-white/5" onClick={() => likedSongs.length > 0 && onPlaySong(likedSongs[0], likedSongs)}>
-                         <div className="w-40 h-40 bg-gradient-to-br from-indigo-500 to-purple-400 rounded shadow-2xl flex items-center justify-center">
+                    <div className="bg-gradient-to-b from-violet-500/10 to-zinc-50 dark:from-violet-800/50 dark:to-zinc-900/50 p-6 rounded-xl flex items-end gap-6 mb-8 cursor-pointer hover:bg-zinc-100 dark:hover:bg-white/5 transition-colors group border border-zinc-200 dark:border-white/5" onClick={() => likedSongs.length > 0 && onPlaySong(likedSongs[0], likedSongs)}>
+                         <div className="w-40 h-40 bg-gradient-to-br from-violet-500 to-purple-400 rounded shadow-2xl flex items-center justify-center">
                             <Heart fill="white" size={64} className="text-white" />
                          </div>
                          <div className="mb-2">
@@ -224,7 +224,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                              </div>
                          </div>
                          <div className="ml-auto mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                             <div className="w-14 h-14 rounded-full bg-green-500 flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
+                             <div className="w-14 h-14 rounded-full bg-violet-500 flex items-center justify-center shadow-lg hover:scale-105 transition-transform">
                                 <Play fill="black" className="text-black ml-1" size={28} />
                              </div>
                          </div>
@@ -248,7 +248,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                 </div>
                                 
                                 <div className="text-zinc-500 dark:text-zinc-400 text-sm font-mono">{song.duration}</div>
-                                <div className="text-green-500"><Heart fill="#22c55e" size={16} /></div>
+                                <div className="text-violet-500"><Heart fill="#8b5cf6" size={16} /></div>
                                 <div className="relative ml-2">
                                     <button
                                         className="p-2 rounded-full hover:bg-zinc-200 dark:hover:bg-white/5 text-zinc-400 hover:text-black dark:hover:text-white transition-colors"

@@ -1,7 +1,10 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
+import os from 'os';
 import { fileURLToPath } from 'url';
+import { promises as fsp } from 'fs';
+import { spawn } from 'child_process';
 import { pool } from '../db/pool.js';
 import { generateUUID } from '../db/sqlite.js';
 import { config } from '../config/index.js';
@@ -781,8 +784,7 @@ router.get('/endpoints', authMiddleware, async (_req: AuthenticatedRequest, res:
 
 router.get('/models', async (_req, res: Response) => {
   try {
-    const ACESTEP_DIR = process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
-    const checkpointsDir = path.join(ACESTEP_DIR, 'checkpoints');
+    const checkpointsDir = resolveCheckpointsDir();
 
     // All known DiT models from Gradio's model_downloader.py registry:
     // - MAIN_MODEL_COMPONENTS includes "acestep-v15-turbo" (bundled with main download)
@@ -861,6 +863,19 @@ router.get('/models', async (_req, res: Response) => {
 // In-memory tracking of active model downloads
 const activeDownloads = new Map<string, { status: 'downloading' | 'done' | 'error'; progress: string; error?: string }>();
 
+// Custom checkpoints path override (set by user via Settings UI)
+let customCheckpointsPath: string | null = null;
+
+function resolveCheckpointsDir(): string {
+  if (customCheckpointsPath) return customCheckpointsPath;
+  const ACESTEP_DIR = process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
+  return path.join(ACESTEP_DIR, 'checkpoints');
+}
+
+function resolveAcestepDir(): string {
+  return process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
+}
+
 // POST /api/generate/models/download — Download a model from HuggingFace
 router.post('/models/download', async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -877,7 +892,7 @@ router.post('/models/download', async (req: AuthenticatedRequest, res: Response)
       return;
     }
 
-    const ACESTEP_DIR = process.env.ACESTEP_PATH || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../ACE-Step-1.5');
+    const ACESTEP_DIR = resolveAcestepDir();
     const pythonPath = resolvePythonPath(ACESTEP_DIR);
     const downloaderScript = path.join(ACESTEP_DIR, 'acestep', 'model_downloader.py');
 
@@ -943,6 +958,131 @@ router.get('/models/download/:modelName', async (req: AuthenticatedRequest, res:
       return;
     }
     res.json(status);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// GET /api/generate/checkpoints-path — Return the resolved checkpoints directory
+router.get('/checkpoints-path', async (_req, res: Response) => {
+  try {
+    const checkpointsDir = resolveCheckpointsDir();
+    const { existsSync } = await import('fs');
+    res.json({
+      path: checkpointsDir,
+      acestepDir: resolveAcestepDir(),
+      exists: existsSync(checkpointsDir),
+      isCustom: !!customCheckpointsPath,
+    });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// POST /api/generate/checkpoints-path — Set a custom checkpoints directory
+router.post('/checkpoints-path', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { path: newPath } = req.body;
+    if (!newPath || typeof newPath !== 'string') {
+      // Reset to default
+      customCheckpointsPath = null;
+      res.json({ path: resolveCheckpointsDir(), isCustom: false });
+      return;
+    }
+    const { existsSync } = await import('fs');
+    if (!existsSync(newPath)) {
+      res.status(400).json({ error: 'Directory does not exist' });
+      return;
+    }
+    customCheckpointsPath = newPath;
+    res.json({ path: newPath, isCustom: true, exists: true });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// POST /api/generate/models/load — Load/swap a DiT model via Gradio
+router.post('/models/load', async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { model } = req.body;
+    if (!model || typeof model !== 'string') {
+      res.status(400).json({ error: 'model name is required' });
+      return;
+    }
+    const apiUrl = config.acestep?.apiUrl || 'http://127.0.0.1:7860';
+    const gradioRes = await fetch(`${apiUrl}/v1/models/load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+      signal: AbortSignal.timeout(120000), // 2min timeout for model loading
+    });
+    if (!gradioRes.ok) {
+      const err = await gradioRes.text();
+      res.status(gradioRes.status).json({ error: err || 'Failed to load model' });
+      return;
+    }
+    const data = await gradioRes.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// POST /api/generate/models/download-main — Download the main model from HuggingFace
+router.post('/models/download-main', async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const existing = activeDownloads.get('__main__');
+    if (existing && existing.status === 'downloading') {
+      res.json({ status: 'downloading', message: 'Already downloading main model', progress: existing.progress });
+      return;
+    }
+
+    const ACESTEP_DIR = resolveAcestepDir();
+    const pythonPath = resolvePythonPath(ACESTEP_DIR);
+    const downloaderScript = path.join(ACESTEP_DIR, 'acestep', 'model_downloader.py');
+
+    const { existsSync: fsExistsSync } = await import('fs');
+    if (!fsExistsSync(downloaderScript)) {
+      res.status(500).json({ error: 'model_downloader.py not found' });
+      return;
+    }
+
+    activeDownloads.set('__main__', { status: 'downloading', progress: 'Starting main model download...' });
+
+    const { spawn } = await import('child_process');
+    const proc = spawn(pythonPath, [downloaderScript, '--download-main'], {
+      cwd: ACESTEP_DIR,
+      env: { ...process.env, ACESTEP_PATH: ACESTEP_DIR, PYTHONUNBUFFERED: '1' },
+    });
+
+    let lastOutput = '';
+    proc.stdout.on('data', (data) => {
+      lastOutput = data.toString().trim();
+      activeDownloads.set('__main__', { status: 'downloading', progress: lastOutput });
+    });
+    proc.stderr.on('data', (data) => {
+      const line = data.toString().trim();
+      if (line) {
+        lastOutput = line;
+        activeDownloads.set('__main__', { status: 'downloading', progress: lastOutput });
+      }
+    });
+
+    proc.on('close', (code) => {
+      if (code === 0) {
+        activeDownloads.set('__main__', { status: 'done', progress: 'Main model download complete!' });
+      } else {
+        activeDownloads.set('__main__', { status: 'error', progress: lastOutput, error: `Download failed (exit code ${code})` });
+      }
+      setTimeout(() => activeDownloads.delete('__main__'), 5 * 60 * 1000);
+    });
+
+    proc.on('error', (err) => {
+      activeDownloads.set('__main__', { status: 'error', progress: '', error: err.message });
+      setTimeout(() => activeDownloads.delete('__main__'), 5 * 60 * 1000);
+    });
+
+    res.json({ status: 'downloading', message: 'Started downloading main model (ACE-Step/Ace-Step1.5)' });
   } catch (error) {
     res.status(500).json({ error: (error as Error).message });
   }
@@ -1202,6 +1342,342 @@ router.post('/list-audio-folder', authMiddleware, async (req: AuthenticatedReque
   } catch (error) {
     console.error('[ListAudioFolder] Error:', error);
     res.status(500).json({ error: (error as Error).message });
+  }
+});
+// ---------------------------------------------------------------------------
+// Extract semantic audio codes from an uploaded audio file
+// Uses the Gradio /convert_src_audio_to_codes endpoint to extract 5Hz semantic
+// tokens that capture melody/rhythm structure much more faithfully than raw
+// reference audio alone.
+// ---------------------------------------------------------------------------
+router.post('/extract-codes', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioUrl } = req.body as { audioUrl?: string };
+    if (!audioUrl || typeof audioUrl !== 'string') {
+      return res.status(400).json({ error: 'audioUrl is required and must be a string' });
+    }
+
+    // Resolve the stored audio URL to a local file path
+    const resolveAudioPath = (url: string): string => {
+      if (url.startsWith('/audio/')) {
+        return path.join(config.audioDir, url.replace('/audio/', ''));
+      }
+      if (url.startsWith('http')) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.pathname.startsWith('/audio/')) {
+            return path.join(config.audioDir, parsed.pathname.replace('/audio/', ''));
+          }
+        } catch { /* fall through */ }
+      }
+      return url;
+    };
+
+    const resolvedPath = resolveAudioPath(audioUrl);
+
+    const fs = await import('fs');
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(404).json({ error: `Audio file not found: ${resolvedPath}` });
+    }
+
+    const client = await getGradioClient();
+    let audioCodes = '';
+
+    // Try both possible endpoint names
+    try {
+      const result = await client.predict('/convert_src_audio_to_codes', [
+        { path: resolvedPath, orig_name: path.basename(resolvedPath) },
+      ]);
+      const data = result.data as unknown[];
+      audioCodes = (data[0] as string) || '';
+    } catch {
+      try {
+        const result = await client.predict('/convert_src_audio_to_codes_wrapper', [
+          { path: resolvedPath, orig_name: path.basename(resolvedPath) },
+        ]);
+        const data = result.data as unknown[];
+        audioCodes = (data[0] as string) || '';
+      } catch (e2) {
+        return res.status(501).json({
+          error: 'Failed to extract audio codes via Gradio',
+          hint: 'Ensure the model is initialized in the Gradio service.',
+          details: e2 instanceof Error ? e2.message : String(e2),
+        });
+      }
+    }
+
+    if (!audioCodes || audioCodes.startsWith('❌')) {
+      return res.status(500).json({ error: audioCodes || 'Failed to encode audio to codes' });
+    }
+
+    const codeCount = (audioCodes.match(/<\|audio_code_\d+\|>/g) || []).length;
+    console.log(`[ExtractCodes] Extracted ${codeCount} semantic tokens from ${path.basename(resolvedPath)}`);
+
+    res.json({ audioCodes, codeCount });
+  } catch (error) {
+    console.error('[ExtractCodes] Error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Whisper transcription — transcribe an uploaded audio file to text
+// Uses Python + openai-whisper library to extract lyrics/speech from audio.
+// Falls back to whisper CLI if available.
+// ---------------------------------------------------------------------------
+
+/** Whisper model sizes with approximate disk sizes */
+const WHISPER_MODELS = [
+  { name: 'tiny',     size: '~75 MB',  params: '39M'  },
+  { name: 'base',     size: '~145 MB', params: '74M'  },
+  { name: 'small',    size: '~465 MB', params: '244M' },
+  { name: 'medium',   size: '~1.5 GB', params: '769M' },
+  { name: 'large',    size: '~3 GB',   params: '1550M' },
+  { name: 'large-v2', size: '~3 GB',   params: '1550M' },
+  { name: 'large-v3', size: '~3 GB',   params: '1550M' },
+  { name: 'turbo',    size: '~1.6 GB', params: '809M' },
+];
+
+/**
+ * Find a working Python executable that has whisper installed.
+ * Checks ACE-Step venv first, then system PATH.
+ */
+const findWhisperPython = async (): Promise<string | null> => {
+  // 1. Direct override
+  if (process.env.WHISPER_CMD) return process.env.WHISPER_CMD;
+
+  // 2. ACE-Step venv Python (most likely location)
+  const venvPythons = [
+    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/.venv/Scripts/python.exe'),
+    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/.venv/bin/python'),
+    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/python_embeded/python.exe'),
+  ];
+  for (const pyPath of venvPythons) {
+    try {
+      await fsp.access(pyPath);
+      // Verify whisper is importable
+      const checkResult = await new Promise<boolean>((resolve) => {
+        const proc = spawn(pyPath, ['-c', 'import whisper; print("ok")'], { stdio: 'pipe' });
+        let output = '';
+        proc.stdout?.on('data', (d: Buffer) => { output += d.toString(); });
+        proc.on('close', (code) => resolve(code === 0 && output.includes('ok')));
+        proc.on('error', () => resolve(false));
+        setTimeout(() => { proc.kill(); resolve(false); }, 10000);
+      });
+      if (checkResult) return pyPath;
+    } catch { /* ignore */ }
+  }
+
+  // 3. Check whisper CLI in PATH as fallback
+  const pathEntries = (process.env.PATH || '').split(path.delimiter);
+  for (const entry of pathEntries) {
+    for (const name of ['whisper', 'whisper.exe']) {
+      const candidate = path.join(entry, name);
+      try {
+        await fsp.access(candidate);
+        return `CLI:${candidate}`; // prefix to distinguish CLI mode
+      } catch { /* ignore */ }
+    }
+  }
+  return null;
+};
+
+router.post('/transcribe', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { audioUrl, language, model } = req.body as { audioUrl?: string; language?: string; model?: string };
+    if (!audioUrl) {
+      return res.status(400).json({ error: 'audioUrl is required' });
+    }
+
+    // Validate model name if provided
+    const whisperModel = model && WHISPER_MODELS.some(m => m.name === model) ? model : 'base';
+
+    // Resolve audio URL → local file path
+    const resolveAudioPath = (url: string): string => {
+      if (url.startsWith('/audio/')) {
+        return path.join(config.audioDir, url.replace('/audio/', ''));
+      }
+      if (url.startsWith('http')) {
+        try {
+          const parsed = new URL(url);
+          if (parsed.pathname.startsWith('/audio/')) {
+            return path.join(config.audioDir, parsed.pathname.replace('/audio/', ''));
+          }
+        } catch { /* fall through */ }
+      }
+      return url;
+    };
+
+    const resolvedPath = resolveAudioPath(audioUrl);
+
+    const fsSync = await import('fs');
+    if (!fsSync.existsSync(resolvedPath)) {
+      return res.status(404).json({ error: `Audio file not found: ${resolvedPath}` });
+    }
+
+    const whisperPython = await findWhisperPython();
+    if (!whisperPython) {
+      return res.status(501).json({
+        error: 'Whisper not found',
+        hint: 'Install whisper: pip install openai-whisper (in ACE-Step venv)',
+      });
+    }
+
+    console.log(`[Transcribe] Using: ${whisperPython} model=${whisperModel} for ${path.basename(resolvedPath)}`);
+
+    let transcript = '';
+
+    if (whisperPython.startsWith('CLI:')) {
+      // CLI mode — use whisper executable directly
+      const cmd = whisperPython.slice(4);
+      const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'whisper-'));
+      const outputDir = path.join(tempDir, 'out');
+      try {
+        await fsp.mkdir(outputDir, { recursive: true });
+        const args = [resolvedPath, '--model', whisperModel, '--output_format', 'txt',
+                      '--output_dir', outputDir, '--fp16', 'False'];
+        if (language) args.push('--language', language);
+
+        await new Promise<void>((resolve, reject) => {
+          const proc = spawn(cmd, args, { stdio: 'pipe' });
+          let stderr = '';
+          proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+          proc.on('error', (err) => reject(new Error(`whisper error: ${err.message}`)));
+          proc.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error(`Whisper exited ${code}: ${stderr.slice(-500)}`));
+          });
+        });
+
+        const files = await fsp.readdir(outputDir);
+        const txtFile = files.find((f) => f.endsWith('.txt'));
+        if (txtFile) {
+          transcript = (await fsp.readFile(path.join(outputDir, txtFile), 'utf8')).trim();
+        }
+      } finally {
+        try { await fsp.rm(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+    } else {
+      // Python library mode — run whisper via Python inline script
+      const langArg = language ? `"${language}"` : 'None';
+      const escapedPath = resolvedPath.replace(/\\/g, '\\\\');
+      const pyScript = `
+import whisper, json, sys
+try:
+    model = whisper.load_model("${whisperModel}")
+    result = model.transcribe("${escapedPath}", language=${langArg}, fp16=False)
+    print(json.dumps({"text": result["text"].strip(), "language": result.get("language", "auto")}))
+except Exception as e:
+    print(json.dumps({"error": str(e)}), file=sys.stderr)
+    sys.exit(1)
+`.trim();
+
+      const output = await new Promise<string>((resolve, reject) => {
+        const proc = spawn(whisperPython, ['-c', pyScript], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+        });
+        let stdout = '';
+        let stderr = '';
+        proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+        proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); });
+        proc.on('error', (err) => reject(new Error(`python error: ${err.message}`)));
+        proc.on('close', (code) => {
+          if (code === 0) resolve(stdout.trim());
+          else reject(new Error(`Whisper failed (code ${code}): ${stderr.slice(-500)}`));
+        });
+      });
+
+      try {
+        const parsed = JSON.parse(output);
+        transcript = parsed.text || '';
+      } catch {
+        transcript = output; // fallback to raw output
+      }
+    }
+
+    if (!transcript) {
+      return res.status(500).json({ error: 'Whisper produced no output' });
+    }
+
+    console.log(`[Transcribe] Success: ${transcript.length} chars from ${path.basename(resolvedPath)}`);
+    res.json({ transcript, language: language || 'auto' });
+  } catch (error) {
+    console.error('[Transcribe] Error:', error);
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+// Check if Whisper is available
+router.get('/transcribe/available', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const whisperPython = await findWhisperPython();
+    res.json({ available: !!whisperPython, path: whisperPython });
+  } catch {
+    res.json({ available: false });
+  }
+});
+
+// List available Whisper models with download status
+router.get('/transcribe/models', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const whisperPython = await findWhisperPython();
+    if (!whisperPython || whisperPython.startsWith('CLI:')) {
+      // Can't check download status in CLI mode — return all as unknown
+      return res.json({
+        available: !!whisperPython,
+        models: WHISPER_MODELS.map(m => ({ ...m, downloaded: false })),
+      });
+    }
+
+    // Use Python to check which models are cached
+    const pyScript = `
+import json, os, sys
+try:
+    cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+    downloaded = set()
+    if os.path.isdir(cache_dir):
+        for f in os.listdir(cache_dir):
+            if f.endswith(".pt"):
+                downloaded.add(f.replace(".pt", ""))
+    # Also check XDG_CACHE_HOME
+    xdg = os.environ.get("XDG_CACHE_HOME")
+    if xdg:
+        alt = os.path.join(xdg, "whisper")
+        if os.path.isdir(alt):
+            for f in os.listdir(alt):
+                if f.endswith(".pt"):
+                    downloaded.add(f.replace(".pt", ""))
+    print(json.dumps(list(downloaded)))
+except Exception as e:
+    print(json.dumps([]), file=sys.stderr)
+    sys.exit(1)
+`.trim();
+
+    const output = await new Promise<string>((resolve, reject) => {
+      const proc = spawn(whisperPython, ['-c', pyScript], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      });
+      let stdout = '';
+      proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
+      proc.on('error', () => resolve('[]'));
+      proc.on('close', (code) => resolve(stdout.trim() || '[]'));
+      setTimeout(() => { proc.kill(); resolve('[]'); }, 10000);
+    });
+
+    let downloaded: string[] = [];
+    try { downloaded = JSON.parse(output); } catch { /* ignore */ }
+
+    const models = WHISPER_MODELS.map(m => ({
+      ...m,
+      downloaded: downloaded.includes(m.name),
+    }));
+
+    res.json({ available: true, models });
+  } catch (error) {
+    console.error('[Whisper Models] Error:', error);
+    res.json({ available: false, models: WHISPER_MODELS.map(m => ({ ...m, downloaded: false })) });
   }
 });
 

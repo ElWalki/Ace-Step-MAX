@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic, FileText, Guitar, AlertTriangle, X, Save, User, Layers } from 'lucide-react';
+import { Sparkles, ChevronDown, Settings2, Trash2, Music2, Sliders, Dices, Hash, RefreshCw, Plus, Upload, Play, Pause, Loader2, Download, FolderOpen, ArrowLeft, Check, FolderSearch, Database, Mic, FileText, Guitar, AlertTriangle, X, Save, User, Layers, Info } from 'lucide-react';
 import { GenerationParams, Song } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { generateApi, trainingApi, voicesApi, vramApi } from '../services/api';
+import { uiBridge, UIAction, UIState } from '../services/uiBridge';
 import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
 import { SongLyricsModal } from './SongLyricsModal';
@@ -30,7 +31,10 @@ interface CreatePanelProps {
   createdSongs?: Song[];
   pendingAudioSelection?: { target: 'reference' | 'source'; url: string; title?: string } | null;
   onAudioSelectionApplied?: () => void;
+  pendingLyrics?: { text: string; mode: 'overwrite' | 'append' } | null;
+  onLyricsApplied?: () => void;
   onPrepareTraining?: (song: Song) => void;
+  onShowInfo?: (info: { title: string; content: string }) => void;
 }
 
 const KEY_SIGNATURES = [
@@ -56,6 +60,7 @@ const KEY_SIGNATURES = [
 
 const TIME_SIGNATURES = [
   { value: '', label: 'Auto' },
+  { value: '1', label: '1/4' },
   { value: '2', label: '2/4' },
   { value: '3', label: '3/4' },
   { value: '4', label: '4/4' },
@@ -133,7 +138,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   createdSongs = [],
   pendingAudioSelection,
   onAudioSelectionApplied,
+  pendingLyrics,
+  onLyricsApplied,
   onPrepareTraining,
+  onShowInfo,
 }) => {
   const { isAuthenticated, token, user } = useAuth();
   const { t } = useI18n();
@@ -438,6 +446,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [instrumentalAudioUrl, setInstrumentalAudioUrl] = useState('');
   const [isSeparating, setIsSeparating] = useState(false);
   const [separationQuality, setSeparationQuality] = useState<'rapida' | 'alta' | 'maxima'>('alta');
+  const [separationBackend, setSeparationBackend] = useState<'demucs' | 'uvr'>('demucs');
+  const [separationModel, setSeparationModel] = useState('UVR-MDX-NET-Inst_HQ_3');
+  const [separationStems, setSeparationStems] = useState<2 | 4>(2);
+  const [extraStems, setExtraStems] = useState<Record<string, { url: string; filename: string }>>({});
   const [useVocalAsReference, setUseVocalAsReference] = useState(true);
   const [useInstrumentalAsSource, setUseInstrumentalAsSource] = useState(false);
   
@@ -677,6 +689,166 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [isResizing, setIsResizing] = useState(false);
   const lyricsRef = useRef<HTMLDivElement>(null);
 
+
+  // ═══ UIBridge: bidirectional sync with ChatAssistant ═══
+
+  // Ref-based state provider (avoids re-registering on every render)
+  const getUIStateRef = useRef<() => UIState>(() => ({} as UIState));
+  getUIStateRef.current = (): UIState => ({
+    customMode, songDescription, lyrics, style, title, instrumental, vocalLanguage, vocalGender,
+    bpm, keyScale, timeSignature,
+    inferenceSteps, guidanceScale, shift, inferMethod, thinking, enhance, audioFormat,
+    duration, batchSize, bulkCount, randomSeed, seed,
+    taskType, selectedModel, lmBackend, lmModel,
+    lmTemperature, lmCfgScale, lmTopK, lmTopP, lmNegativePrompt,
+    referenceAudioUrl, referenceAudioTitle, sourceAudioUrl, sourceAudioTitle,
+    audioCoverStrength, sourceStrength, audioCodes,
+    repaintingStart, repaintingEnd, instruction,
+    editMode, editAction, editTarget, editStart, editEnd,
+    loraPath, loraLoaded, loraEnabled, loraScale, loraTriggerTag, loraTagPosition,
+    selectedLoraName, selectedLoraVariant,
+    loraList: loraList.map(l => ({ name: l.name, source: l.source, variants: l.variants?.map(v => v.label), metadata: l.metadata })),
+    variationMode, audioInfluence, styleInfluence, weirdness,
+    sectionMeasures, melodicVariation,
+    apgNormThreshold, apgMomentum, apgEta,
+    noRepeatNgramSize, vocalRange, vocalStyle, noteSustain,
+    useAdg, cfgIntervalStart, cfgIntervalEnd,
+    useCotMetas, useCotCaption, useCotLanguage, autogen,
+    getScores, getLrc, scoreScale, lmBatchChunkSize,
+    alignToMeasures, isFormatCaption,
+    maxDurationWithLm, maxDurationWithoutLm,
+    trackName, completeTrackClasses,
+    vocalAudioUrl, vocalAudioTitle, instrumentalAudioUrl,
+    separationQuality, useVocalAsReference, useInstrumentalAsSource,
+    fetchedModels: fetchedModels.map(m => ({ name: m.name, is_active: m.is_active, is_preloaded: m.is_preloaded })),
+    vramStatus: vramStatus ? { used_mb: vramStatus.used_mb, total_mb: vramStatus.total_mb, free_mb: vramStatus.free_mb, percent: vramStatus.usage_percent } : null,
+    llmStatus: llmStatus ? { loaded: llmStatus.loaded, model: llmStatus.model || '', backend: llmStatus.backend || '' } : null,
+    musicTags: musicTags.map(t => ({ label: t.label, tier: t.tier })),
+  });
+
+  // Register state provider once
+  useEffect(() => {
+    uiBridge.registerStateProvider(() => getUIStateRef.current());
+    return () => uiBridge.unregisterStateProvider();
+  }, []);
+
+  // Subscribe to actions from ChatAssistant
+  useEffect(() => {
+    const unsub = uiBridge.onAction((action: UIAction) => {
+      if (action.type === 'set') {
+        const p = action.params;
+        // Core fields
+        if (p.customMode !== undefined) setCustomMode(p.customMode);
+        if (p.songDescription !== undefined) setSongDescription(p.songDescription);
+        if (p.lyrics !== undefined) setLyrics(p.lyrics);
+        if (p.style !== undefined) setStyle(p.style);
+        if (p.title !== undefined) setTitle(p.title);
+        if (p.instrumental !== undefined) setInstrumental(p.instrumental);
+        if (p.vocalLanguage !== undefined) setVocalLanguage(p.vocalLanguage);
+        if (p.vocalGender !== undefined) setVocalGender(p.vocalGender as any);
+        // Music theory
+        if (p.bpm !== undefined) setBpm(Number(p.bpm));
+        if (p.keyScale !== undefined) setKeyScale(p.keyScale);
+        if (p.timeSignature !== undefined) setTimeSignature(p.timeSignature);
+        // Quality
+        if (p.inferenceSteps !== undefined) setInferenceSteps(Number(p.inferenceSteps));
+        if (p.guidanceScale !== undefined) setGuidanceScale(Number(p.guidanceScale));
+        if (p.shift !== undefined) setShift(Number(p.shift));
+        if (p.inferMethod !== undefined) setInferMethod(p.inferMethod as any);
+        if (p.thinking !== undefined) setThinking(p.thinking);
+        if (p.enhance !== undefined) setEnhance(p.enhance);
+        if (p.audioFormat !== undefined) setAudioFormat(p.audioFormat as any);
+        // Duration / batch
+        if (p.duration !== undefined) setDuration(Number(p.duration));
+        if (p.batchSize !== undefined) setBatchSize(Number(p.batchSize));
+        if (p.bulkCount !== undefined) setBulkCount(Number(p.bulkCount));
+        if (p.randomSeed !== undefined) setRandomSeed(p.randomSeed);
+        if (p.seed !== undefined) setSeed(Number(p.seed));
+        // Task type
+        if (p.taskType !== undefined) setTaskType(p.taskType);
+        // Model
+        if (p.selectedModel !== undefined) setSelectedModel(p.selectedModel);
+        if (p.lmBackend !== undefined) setLmBackend(p.lmBackend as any);
+        if (p.lmModel !== undefined) setLmModel(p.lmModel);
+        // LM sampling
+        if (p.lmTemperature !== undefined) setLmTemperature(Number(p.lmTemperature));
+        if (p.lmCfgScale !== undefined) setLmCfgScale(Number(p.lmCfgScale));
+        if (p.lmTopK !== undefined) setLmTopK(Number(p.lmTopK));
+        if (p.lmTopP !== undefined) setLmTopP(Number(p.lmTopP));
+        if (p.lmNegativePrompt !== undefined) setLmNegativePrompt(p.lmNegativePrompt);
+        // Audio references
+        if (p.referenceAudioUrl !== undefined) setReferenceAudioUrl(p.referenceAudioUrl);
+        if (p.referenceAudioTitle !== undefined) setReferenceAudioTitle(p.referenceAudioTitle);
+        if (p.sourceAudioUrl !== undefined) setSourceAudioUrl(p.sourceAudioUrl);
+        if (p.sourceAudioTitle !== undefined) setSourceAudioTitle(p.sourceAudioTitle);
+        if (p.audioCoverStrength !== undefined) setAudioCoverStrength(Number(p.audioCoverStrength));
+        if (p.sourceStrength !== undefined) setSourceStrength(Number(p.sourceStrength));
+        if (p.audioCodes !== undefined) setAudioCodes(p.audioCodes);
+        // Repaint / edit
+        if (p.repaintingStart !== undefined) setRepaintingStart(Number(p.repaintingStart));
+        if (p.repaintingEnd !== undefined) setRepaintingEnd(Number(p.repaintingEnd));
+        if (p.instruction !== undefined) setInstruction(p.instruction);
+        if (p.editMode !== undefined) setEditMode(p.editMode);
+        if (p.editAction !== undefined) setEditAction(p.editAction as any);
+        if (p.editTarget !== undefined) setEditTarget(p.editTarget as any);
+        if (p.editStart !== undefined) setEditStart(Number(p.editStart));
+        if (p.editEnd !== undefined) setEditEnd(Number(p.editEnd));
+        // LoRA
+        if (p.loraPath !== undefined) setLoraPath(p.loraPath);
+        if (p.loraEnabled !== undefined) setLoraEnabled(p.loraEnabled);
+        if (p.loraScale !== undefined) setLoraScale(Number(p.loraScale));
+        if (p.loraTriggerTag !== undefined) setLoraTriggerTag(p.loraTriggerTag);
+        if (p.loraTagPosition !== undefined) setLoraTagPosition(p.loraTagPosition);
+        if (p.selectedLoraName !== undefined) setSelectedLoraName(p.selectedLoraName);
+        if (p.selectedLoraVariant !== undefined) setSelectedLoraVariant(p.selectedLoraVariant);
+        // Variation mode
+        if (p.variationMode !== undefined) setVariationMode(p.variationMode);
+        if (p.audioInfluence !== undefined) setAudioInfluence(Number(p.audioInfluence));
+        if (p.styleInfluence !== undefined) setStyleInfluence(Number(p.styleInfluence));
+        if (p.weirdness !== undefined) setWeirdness(Number(p.weirdness));
+        // Melodic / APG
+        if (p.sectionMeasures !== undefined) setSectionMeasures(Number(p.sectionMeasures));
+        if (p.melodicVariation !== undefined) setMelodicVariation(Number(p.melodicVariation));
+        if (p.apgNormThreshold !== undefined) setApgNormThreshold(Number(p.apgNormThreshold));
+        if (p.apgMomentum !== undefined) setApgMomentum(Number(p.apgMomentum));
+        if (p.apgEta !== undefined) setApgEta(Number(p.apgEta));
+        if (p.noRepeatNgramSize !== undefined) setNoRepeatNgramSize(Number(p.noRepeatNgramSize));
+        if (p.vocalRange !== undefined) setVocalRange(Number(p.vocalRange));
+        if (p.vocalStyle !== undefined) setVocalStyle(Number(p.vocalStyle));
+        if (p.noteSustain !== undefined) setNoteSustain(Number(p.noteSustain));
+        // Advanced toggles
+        if (p.useAdg !== undefined) setUseAdg(p.useAdg);
+        if (p.cfgIntervalStart !== undefined) setCfgIntervalStart(Number(p.cfgIntervalStart));
+        if (p.cfgIntervalEnd !== undefined) setCfgIntervalEnd(Number(p.cfgIntervalEnd));
+        if (p.useCotMetas !== undefined) setUseCotMetas(p.useCotMetas);
+        if (p.useCotCaption !== undefined) setUseCotCaption(p.useCotCaption);
+        if (p.useCotLanguage !== undefined) setUseCotLanguage(p.useCotLanguage);
+        if (p.autogen !== undefined) setAutogen(p.autogen);
+        if (p.getScores !== undefined) setGetScores(p.getScores);
+        if (p.getLrc !== undefined) setGetLrc(p.getLrc);
+        if (p.scoreScale !== undefined) setScoreScale(Number(p.scoreScale));
+        if (p.lmBatchChunkSize !== undefined) setLmBatchChunkSize(Number(p.lmBatchChunkSize));
+        if (p.alignToMeasures !== undefined) setAlignToMeasures(p.alignToMeasures);
+        if (p.isFormatCaption !== undefined) setIsFormatCaption(p.isFormatCaption);
+        if (p.trackName !== undefined) setTrackName(p.trackName);
+        if (p.completeTrackClasses !== undefined) setCompleteTrackClasses(p.completeTrackClasses);
+        // Vocal separation
+        if (p.separationQuality !== undefined) setSeparationQuality(p.separationQuality as any);
+        if (p.useVocalAsReference !== undefined) setUseVocalAsReference(p.useVocalAsReference);
+        if (p.useInstrumentalAsSource !== undefined) setUseInstrumentalAsSource(p.useInstrumentalAsSource);
+      } else if (action.type === 'swapModel') {
+        setSelectedModel(action.model);
+        localStorage.setItem('ace-model', action.model);
+      } else if (action.type === 'generate') {
+        // Programmatic generation trigger — will be handled by clicking the generate button
+        // We emit a custom event that the generate button can listen to
+        document.dispatchEvent(new CustomEvent('ace-bridge-generate'));
+      }
+    });
+    return unsub;
+  }, []);
+
+  // ═══ End UIBridge ═══
 
   // Close model menu when clicking outside (checks both button wrapper and portal)
   useEffect(() => {
@@ -1283,6 +1455,17 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     onAudioSelectionApplied?.();
   }, [pendingAudioSelection, onAudioSelectionApplied]);
 
+  // Consume pending lyrics from ChatAssistant
+  useEffect(() => {
+    if (!pendingLyrics) return;
+    if (pendingLyrics.mode === 'overwrite') {
+      setLyrics(pendingLyrics.text);
+    } else {
+      setLyrics(prev => prev ? prev + '\n\n' + pendingLyrics.text : pendingLyrics.text);
+    }
+    onLyricsApplied?.();
+  }, [pendingLyrics, onLyricsApplied]);
+
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isResizing) return;
@@ -1395,6 +1578,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     const getDragKind = (e: DragEvent): 'file' | 'audio' | null => {
       if (!e.dataTransfer) return null;
       const types = Array.from(e.dataTransfer.types);
+      // If the drag includes a full song (for the chat assistant), ignore it here
+      if (types.includes('application/x-ace-song')) return null;
       if (types.includes('Files')) return 'file';
       if (types.includes('application/x-ace-audio')) return 'audio';
       return null;
@@ -2041,23 +2226,43 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const handleSeparateStems = async (audioUrl: string, title: string) => {
     if (isSeparating) return;
     setIsSeparating(true);
+    setExtraStems({});
     try {
-      const result = await trainingApi.separateStems(audioUrl, separationQuality, token || undefined);
+      const result = await trainingApi.separateStems(audioUrl, separationQuality, token || undefined, {
+        backend: separationBackend,
+        model: separationBackend === 'uvr' ? separationModel : undefined,
+        stems: separationStems,
+      });
       if (result.success) {
         // Set vocal audio
-        setVocalAudioUrl(result.vocals.url);
-        setVocalAudioTitle(`${title} (Vocal)`);
+        if (result.vocals) {
+          setVocalAudioUrl(result.vocals.url);
+          setVocalAudioTitle(`${title} (Vocal)`);
+        }
         // Store instrumental URL
-        setInstrumentalAudioUrl(result.instrumental.url);
+        if (result.instrumental) {
+          setInstrumentalAudioUrl(result.instrumental.url);
+        }
+
+        // Store extra stems (drums, bass, other) if present
+        const extras: Record<string, { url: string; filename: string }> = {};
+        if (result.allStems) {
+          for (const [stemName, stemData] of Object.entries(result.allStems)) {
+            if (stemName !== 'vocals' && stemName !== 'instrumental') {
+              extras[stemName] = { url: stemData.url, filename: stemData.filename };
+            }
+          }
+        }
+        setExtraStems(extras);
 
         // Auto-apply based on user preferences
-        if (useVocalAsReference) {
+        if (useVocalAsReference && result.vocals) {
           setReferenceAudioUrl(result.vocals.url);
           setReferenceAudioTitle(`${title} (Vocal)`);
           setReferenceTime(0);
           setReferenceDuration(0);
         }
-        if (useInstrumentalAsSource) {
+        if (useInstrumentalAsSource && result.instrumental) {
           setSourceAudioUrl(result.instrumental.url);
           setSourceAudioTitle(`${title} (Instrumental)`);
           setSourceTime(0);
@@ -2077,12 +2282,16 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   const handleWorkspaceDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    // Skip drags that include full song data (those go to the chat assistant)
+    if (e.dataTransfer.types.includes('application/x-ace-song')) return;
     if (e.dataTransfer.files?.length || e.dataTransfer.types.includes('application/x-ace-audio')) {
       handleDrop(e, audioTab);
     }
   };
 
   const handleWorkspaceDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    // Skip drags that include full song data (those go to the chat assistant)
+    if (e.dataTransfer.types.includes('application/x-ace-song')) return;
     if (e.dataTransfer.types.includes('Files') || e.dataTransfer.types.includes('application/x-ace-audio')) {
       e.preventDefault();
     }
@@ -2280,6 +2489,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       useAdg,
       cfgIntervalStart,
       cfgIntervalEnd,
+      audioCodes: audioCodes.trim() || undefined,
       customTimesteps: customTimesteps.trim() || undefined,
       useCotMetas,
       useCotCaption,
@@ -2316,7 +2526,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="flex flex-col items-center gap-2 rounded-2xl border border-zinc-200 dark:border-white/10 bg-white/90 dark:bg-zinc-900/90 px-6 py-5 shadow-xl">
               {dragKind !== 'audio' && (
-                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center shadow-lg">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center shadow-lg">
                   <Upload size={22} />
                 </div>
               )}
@@ -2479,7 +2689,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
                             {selectedModel === model.id && isDownloaded && (
-                              <div className="w-4 h-4 rounded-full bg-pink-500 flex items-center justify-center">
+                              <div className="w-4 h-4 rounded-full bg-violet-500 flex items-center justify-center">
                                 <svg className="w-3 h-3 text-white" fill="currentColor" viewBox="0 0 20 20">
                                   <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
                                 </svg>
@@ -2491,7 +2701,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                                   e.stopPropagation();
                                   handleModelDownload(model.id);
                                 }}
-                                className="p-1.5 rounded-lg bg-pink-500 hover:bg-pink-600 text-white transition-colors"
+                                className="p-1.5 rounded-lg bg-violet-500 hover:bg-violet-600 text-white transition-colors"
                                 title={`Download ${model.id}`}
                               >
                                 <Download size={12} />
@@ -2499,7 +2709,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             )}
                             {isDownloading && (
                               <div className="p-1.5">
-                                <Loader2 size={12} className="animate-spin text-pink-500" />
+                                <Loader2 size={12} className="animate-spin text-violet-500" />
                               </div>
                             )}
                           </div>
@@ -2509,7 +2719,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         {isDownloading && dlStatus && (
                           <div className="mt-2">
                             <div className="w-full bg-zinc-200 dark:bg-zinc-700 rounded-full h-1.5 overflow-hidden">
-                              <div className="bg-gradient-to-r from-pink-500 to-purple-500 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }}></div>
+                              <div className="bg-gradient-to-r from-violet-500 to-purple-500 h-1.5 rounded-full animate-pulse" style={{ width: '100%' }}></div>
                             </div>
                             <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1 truncate">
                               {dlStatus.progress || 'Downloading...'}
@@ -2557,7 +2767,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         />
                         <button
                           onClick={() => presetName.trim() && savePreset(presetName.trim())}
-                          className="px-2 py-1.5 bg-pink-500 text-white rounded-md text-xs font-semibold hover:bg-pink-600 transition-colors"
+                          className="px-2 py-1.5 bg-violet-500 text-white rounded-md text-xs font-semibold hover:bg-violet-600 transition-colors"
                         >
                           Save
                         </button>
@@ -2565,7 +2775,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     ) : (
                       <button
                         onClick={() => setShowSavePreset(true)}
-                        className="w-full px-3 py-2 text-left text-xs font-medium text-pink-500 hover:bg-pink-50 dark:hover:bg-pink-500/10 rounded-lg transition-colors flex items-center gap-2"
+                        className="w-full px-3 py-2 text-left text-xs font-medium text-violet-500 hover:bg-violet-50 dark:hover:bg-violet-500/10 rounded-lg transition-colors flex items-center gap-2"
                       >
                         <Plus size={12} />
                         Save current as preset
@@ -2663,7 +2873,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 <select
                   value={vocalLanguage}
                   onChange={(e) => setVocalLanguage(e.target.value)}
-                  className="w-full bg-white dark:bg-suno-card border border-zinc-200 dark:border-white/5 rounded-xl px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                  className="w-full bg-white dark:bg-suno-card border border-zinc-200 dark:border-white/5 rounded-xl px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                 >
                   {VOCAL_LANGUAGE_KEYS.map(lang => (
                     <option key={lang.value} value={lang.value}>{t(lang.key)}</option>
@@ -2678,14 +2888,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <button
                     type="button"
                     onClick={() => setVocalGender(vocalGender === 'male' ? '' : 'male')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'male' ? 'bg-pink-600 text-white border-pink-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'male' ? 'bg-violet-600 text-white border-violet-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
                   >
                     {t('male')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setVocalGender(vocalGender === 'female' ? '' : 'female')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'female' ? 'bg-pink-600 text-white border-pink-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'female' ? 'bg-violet-600 text-white border-violet-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
                   >
                     {t('female')}
                   </button>
@@ -2732,7 +2942,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <select
                     value={keyScale}
                     onChange={(e) => setKeyScale(e.target.value)}
-                    className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                    className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                   >
                     <option value="">Auto</option>
                     {KEY_SIGNATURES.filter(k => k).map(key => (
@@ -2745,7 +2955,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <select
                     value={timeSignature}
                     onChange={(e) => setTimeSignature(e.target.value)}
-                    className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                    className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                   >
                     {TIME_SIGNATURES.map(ts => (
                       <option key={ts.value} value={ts.value}>{ts.label}</option>
@@ -2771,7 +2981,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   step="1"
                   value={batchSize}
                   onChange={setBatchSize}
-                  className="w-full h-2 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                  className="w-full h-2 bg-zinc-200 dark:bg-zinc-700 rounded-lg appearance-none cursor-pointer accent-violet-500"
                 />
                 <p className="text-[10px] text-zinc-500">{t('numberOfVariations')}</p>
               </div>
@@ -2798,11 +3008,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       onClick={() => setAudioTab('reference')}
                       className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors duration-150 flex items-center gap-1.5 ${
                         audioTab === 'reference'
-                          ? 'bg-white dark:bg-zinc-700 text-pink-600 dark:text-pink-400 shadow-sm'
+                          ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
                           : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200'
                       }`}
                     >
-                      {referenceAudioUrl && <span className="w-1.5 h-1.5 rounded-full bg-pink-500 animate-pulse" />}
+                      {referenceAudioUrl && <span className="w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse" />}
                       {t('reference')}
                     </button>
                     <button
@@ -2841,7 +3051,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     <button
                       type="button"
                       onClick={() => toggleAudio('reference')}
-                      className="relative flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-pink-500/20 hover:scale-105 transition-transform"
+                      className="relative flex-shrink-0 w-10 h-10 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 text-white flex items-center justify-center shadow-lg shadow-violet-500/20 hover:scale-105 transition-transform"
                     >
                       {referencePlaying ? (
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/></svg>
@@ -2869,7 +3079,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                           }}
                         >
                           <div
-                            className="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full transition-[width] duration-150 relative"
+                            className="h-full bg-gradient-to-r from-violet-500 to-purple-500 rounded-full transition-[width] duration-150 relative"
                             style={{ width: referenceDuration ? `${Math.min(100, (referenceTime / referenceDuration) * 100)}%` : '0%' }}
                           >
                             <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
@@ -2892,7 +3102,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         audioUrl: referenceAudioUrl,
                         isPublic: false,
                       })}
-                      className="p-1.5 rounded-full hover:bg-pink-100 dark:hover:bg-pink-900/30 text-zinc-400 hover:text-pink-600 dark:hover:text-pink-400 transition-colors"
+                      className="p-1.5 rounded-full hover:bg-violet-100 dark:hover:bg-violet-900/30 text-zinc-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
                       title="Prepare for Training"
                     >
                       <Database size={14} />
@@ -3534,11 +3744,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         <button
                           type="button"
                           onClick={() => setShowLyricsModal(true)}
-                          className="w-full flex items-start gap-2.5 rounded-lg bg-pink-50 dark:bg-pink-900/15 hover:bg-pink-100 dark:hover:bg-pink-900/25 border border-pink-200 dark:border-pink-800/30 px-3 py-2.5 text-left transition-colors group"
+                          className="w-full flex items-start gap-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/15 hover:bg-violet-100 dark:hover:bg-violet-900/25 border border-violet-200 dark:border-violet-800/30 px-3 py-2.5 text-left transition-colors group"
                         >
-                          <Music2 size={14} className="text-pink-500 mt-0.5 shrink-0" />
+                          <Music2 size={14} className="text-violet-500 mt-0.5 shrink-0" />
                           <div>
-                            <div className="text-[11px] font-bold text-pink-700 dark:text-pink-300 group-hover:text-pink-800 dark:group-hover:text-pink-200">🎸 Sing a Song's Lyrics</div>
+                            <div className="text-[11px] font-bold text-violet-700 dark:text-violet-300 group-hover:text-violet-800 dark:group-hover:text-violet-200">🎸 Sing a Song's Lyrics</div>
                             <div className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-0.5">Pick a song, extract lyrics, make this voice sing them.</div>
                           </div>
                         </button>
@@ -3637,29 +3847,92 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800/30">
                         <Loader2 size={14} className="animate-spin text-violet-500" />
                         <span className="text-[11px] text-violet-700 dark:text-violet-300 font-medium">
-                          Separating audio with Demucs... This may take a few minutes.
+                          Separating audio with {separationBackend === 'uvr' ? 'UVR (MDX-Net)' : 'Demucs'}... This may take a few minutes.
                         </span>
                       </div>
                     )}
 
-                    {/* Quality selector + Auto-apply options */}
+                    {/* Separator options */}
                     {!isSeparating && (
                       <div className="space-y-2">
+                        {/* Backend selector */}
                         <div className="flex items-center gap-2">
-                          <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Quality</label>
+                          <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Engine</label>
                           <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
-                            {(['rapida', 'alta', 'maxima'] as const).map((q) => (
+                            {(['demucs', 'uvr'] as const).map((b) => (
                               <button
-                                key={q}
+                                key={b}
                                 type="button"
-                                onClick={() => setSeparationQuality(q)}
-                                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-                                  separationQuality === q
+                                onClick={() => setSeparationBackend(b)}
+                                className={`px-2.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  separationBackend === b
                                     ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
                                     : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
                                 }`}
                               >
-                                {q === 'rapida' ? 'Fast' : q === 'alta' ? 'High' : 'Max'}
+                                {b === 'demucs' ? 'Demucs' : 'UVR / MDX-Net'}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Quality selector (Demucs only) */}
+                        {separationBackend === 'demucs' && (
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Quality</label>
+                            <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
+                              {(['rapida', 'alta', 'maxima'] as const).map((q) => (
+                                <button
+                                  key={q}
+                                  type="button"
+                                  onClick={() => setSeparationQuality(q)}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                    separationQuality === q
+                                      ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
+                                      : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
+                                  }`}
+                                >
+                                  {q === 'rapida' ? 'Fast' : q === 'alta' ? 'High' : 'Max'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* UVR Model selector */}
+                        {separationBackend === 'uvr' && (
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Model</label>
+                            <select
+                              value={separationModel}
+                              onChange={(e) => setSeparationModel(e.target.value)}
+                              className="flex-1 text-[10px] bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md px-2 py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                            >
+                              <option value="UVR-MDX-NET-Inst_HQ_3">MDX-Net Inst HQ 3 (best overall)</option>
+                              <option value="UVR-MDX-NET-Voc_FT">MDX-Net Vocal FT (vocal-focused)</option>
+                              <option value="UVR_MDXNET_KARA_2">MDX-Net Karaoke 2</option>
+                              <option value="Kim_Vocal_2">Kim Vocal 2 (popular)</option>
+                              <option value="UVR-MDX-NET-Inst_3">MDX-Net Inst 3 (clean inst)</option>
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Stem count selector */}
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Stems</label>
+                          <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
+                            {([2, 4] as const).map((s) => (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={() => setSeparationStems(s)}
+                                className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                                  separationStems === s
+                                    ? 'bg-white dark:bg-zinc-700 text-violet-600 dark:text-violet-400 shadow-sm'
+                                    : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
+                                }`}
+                              >
+                                {s === 2 ? '2 (Vocal + Inst)' : '4 (Vocal + Drums + Bass + Other)'}
                               </button>
                             ))}
                           </div>
@@ -3705,6 +3978,31 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             >
                               Use as Source
                             </button>
+                          </div>
+                        )}
+
+                        {/* Extra stems indicators (drums, bass, other) */}
+                        {Object.keys(extraStems).length > 0 && (
+                          <div className="space-y-1">
+                            {Object.entries(extraStems).map(([stemName, stemData]) => (
+                              <div key={stemName} className="flex items-center gap-2 p-1.5 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/20">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                <span className="text-[10px] text-amber-700 dark:text-amber-400 capitalize">{stemName}</span>
+                                <span className="text-[9px] text-zinc-400 truncate flex-1">{stemData.filename}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSourceAudioUrl(stemData.url);
+                                    setSourceAudioTitle(`${vocalAudioTitle?.replace(' (Vocal)', '')} (${stemName})`);
+                                    setSourceTime(0);
+                                    setSourceDuration(0);
+                                  }}
+                                  className="text-[10px] font-medium text-amber-600 dark:text-amber-400 hover:underline whitespace-nowrap"
+                                >
+                                  Use as Source
+                                </button>
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
@@ -3867,14 +4165,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     onClick={() => setInstrumental(!instrumental)}
                     className={`px-2.5 py-1 rounded-full text-[10px] font-semibold border transition-colors ${
                       instrumental
-                        ? 'bg-pink-600 text-white border-pink-500'
+                        ? 'bg-violet-600 text-white border-violet-500'
                         : 'bg-white dark:bg-suno-card border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-white/10'
                     }`}
                   >
                     {instrumental ? t('instrumental') : t('vocal')}
                   </button>
                   <button
-                    className={`p-1.5 hover:bg-zinc-200 dark:hover:bg-white/10 rounded transition-colors ${isFormattingLyrics ? 'text-pink-500' : 'text-zinc-500 hover:text-black dark:hover:text-white'}`}
+                    className={`p-1.5 hover:bg-zinc-200 dark:hover:bg-white/10 rounded transition-colors ${isFormattingLyrics ? 'text-violet-500' : 'text-zinc-500 hover:text-black dark:hover:text-white'}`}
                     title="AI Format - Enhance style & auto-fill parameters"
                     onClick={() => handleFormat('lyrics')}
                     disabled={isFormattingLyrics || !style.trim()}
@@ -3903,7 +4201,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <button
                     onClick={handleAIGenerateAndCreate}
                     disabled={isAIGenerating || activeJobCount >= maxConcurrentJobs}
-                    className="w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-violet-500 to-pink-500 text-white hover:from-violet-600 hover:to-pink-600 shadow-sm"
+                    className="w-full py-2.5 rounded-lg text-xs font-bold flex items-center justify-center gap-2 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-violet-500 to-violet-500 text-white hover:from-violet-600 hover:to-violet-600 shadow-sm"
                   >
                     {isAIGenerating ? (
                       <><Loader2 size={13} className="animate-spin" /> Generando letra y canción...</>
@@ -3955,7 +4253,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     <Trash2 size={14} />
                   </button>
                   <button
-                    className={`p-1.5 hover:bg-zinc-200 dark:hover:bg-white/10 rounded transition-colors ${isFormattingStyle ? 'text-pink-500' : 'text-zinc-500 hover:text-black dark:hover:text-white'}`}
+                    className={`p-1.5 hover:bg-zinc-200 dark:hover:bg-white/10 rounded transition-colors ${isFormattingStyle ? 'text-violet-500' : 'text-zinc-500 hover:text-black dark:hover:text-white'}`}
                     title="AI Format - Enhance style & auto-fill parameters"
                     onClick={() => handleFormat('style')}
                     disabled={isFormattingStyle || !style.trim()}
@@ -4282,7 +4580,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               </div>
               <button
                 onClick={() => setInstrumental(!instrumental)}
-                className={`w-11 h-6 rounded-full flex items-center transition-colors duration-200 px-1 border border-zinc-200 dark:border-white/5 ${instrumental ? 'bg-pink-600' : 'bg-zinc-300 dark:bg-black/40'}`}
+                className={`w-11 h-6 rounded-full flex items-center transition-colors duration-200 px-1 border border-zinc-200 dark:border-white/5 ${instrumental ? 'bg-violet-600' : 'bg-zinc-300 dark:bg-black/40'}`}
               >
                 <div className={`w-4 h-4 rounded-full bg-white transform transition-transform duration-200 shadow-sm ${instrumental ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
@@ -4299,7 +4597,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 <select
                   value={vocalLanguage}
                   onChange={(e) => setVocalLanguage(e.target.value)}
-                  className="w-full bg-white dark:bg-suno-card border border-zinc-200 dark:border-white/5 rounded-xl px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                  className="w-full bg-white dark:bg-suno-card border border-zinc-200 dark:border-white/5 rounded-xl px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                 >
                   {VOCAL_LANGUAGE_KEYS.map(lang => (
                     <option key={lang.value} value={lang.value}>{t(lang.key)}</option>
@@ -4314,14 +4612,14 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   <button
                     type="button"
                     onClick={() => setVocalGender(vocalGender === 'male' ? '' : 'male')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'male' ? 'bg-pink-600 text-white border-pink-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'male' ? 'bg-violet-600 text-white border-violet-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
                   >
                     {t('male')}
                   </button>
                   <button
                     type="button"
                     onClick={() => setVocalGender(vocalGender === 'female' ? '' : 'female')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'female' ? 'bg-pink-600 text-white border-pink-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${vocalGender === 'female' ? 'bg-violet-600 text-white border-violet-600' : 'border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-zinc-300 dark:hover:border-white/20'}`}
                   >
                     {t('female')}
                   </button>
@@ -4382,7 +4680,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       <button
                         onClick={fetchLoraList}
                         disabled={loraListLoading}
-                        className="text-[10px] text-zinc-400 hover:text-pink-500 transition-colors flex items-center gap-1"
+                        className="text-[10px] text-zinc-400 hover:text-violet-500 transition-colors flex items-center gap-1"
                         title="Refresh LoRA list"
                       >
                         {loraListLoading ? <Loader2 size={10} className="animate-spin" /> : '↻'} Refresh
@@ -4392,7 +4690,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       value={selectedLoraName}
                       onChange={(e) => handleLoraNameSelect(e.target.value)}
                       disabled={loraLoaded}
-                      className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white [&>optgroup]:font-bold [&>optgroup]:text-zinc-500"
+                      className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white [&>optgroup]:font-bold [&>optgroup]:text-zinc-500"
                     >
                       <option value="">-- Select a LoRA --</option>
                       {loraList.filter(l => l.source === 'library').length > 0 && (
@@ -4424,7 +4722,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         value={selectedLoraVariant}
                         onChange={(e) => handleLoraVariantSelect(e.target.value)}
                         disabled={loraLoaded}
-                        className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                        className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer disabled:opacity-50 [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                       >
                         {selectedLoraEntry.variants.map(v => (
                           <option key={v.label} value={v.label}>
@@ -4467,7 +4765,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         value={loraPath}
                         onChange={(e) => { setLoraPath(e.target.value); setSelectedLoraName(''); setSelectedLoraVariant(''); }}
                         placeholder="C:\Users\...\checkpoints\epoch_90  or  ./lora_library/my_adapter"
-                        className="flex-1 bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors font-mono"
+                        className="flex-1 bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors font-mono"
                       />
                       <button
                         onClick={handleLoraBrowseOpen}
@@ -4487,7 +4785,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         <span className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">📁 Checkpoint Path</span>
                         <button
                           onClick={() => { navigator.clipboard.writeText(loraPath); }}
-                          className="text-[10px] text-zinc-400 hover:text-pink-500 dark:hover:text-pink-400 transition-colors"
+                          className="text-[10px] text-zinc-400 hover:text-violet-500 dark:hover:text-violet-400 transition-colors"
                           title="Copy path"
                         >
                           Copy
@@ -4570,7 +4868,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       checked={loraEnabled}
                       onChange={handleLoraEnabledToggle}
                       disabled={!loraLoaded}
-                      className="accent-pink-600"
+                      className="accent-violet-600"
                     />
                     Use LoRA
                   </label>
@@ -4620,7 +4918,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <select
                 value={keyScale}
                 onChange={(e) => setKeyScale(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
               >
                 <option value="">Auto</option>
                 {KEY_SIGNATURES.filter(k => k).map(key => (
@@ -4633,7 +4931,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <select
                 value={timeSignature}
                 onChange={(e) => setTimeSignature(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
               >
                 {TIME_SIGNATURES.map(ts => (
                   <option key={ts.value} value={ts.value}>{ts.label}</option>
@@ -4709,7 +5007,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     onClick={() => { setBulkCount(count); localStorage.setItem('ace-bulkCount', String(count)); }}
                     className={`flex-1 py-2 rounded-lg text-xs font-bold transition-colors duration-150 ${
                       bulkCount === count
-                        ? 'bg-gradient-to-r from-orange-500 to-pink-600 text-white shadow-md'
+                        ? 'bg-gradient-to-r from-orange-500 to-violet-600 text-white shadow-md'
                         : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-zinc-700'
                     }`}
                   >
@@ -4725,11 +5023,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               label={t('inferenceSteps')}
               value={inferenceSteps}
               min={1}
-              max={isTurboModel(selectedModel) ? 20 : 200}
+              max={isTurboModel(selectedModel) ? 100 : 500}
               step={1}
               onChange={setInferenceSteps}
               helpText={t('moreStepsBetterQuality')}
-              title="More steps usually improves quality but slows generation."
+              title="More steps usually improves quality but slows generation. Turbo optimized for 8, but higher values may improve quality."
             />
 
             {/* Guidance Scale */}
@@ -4752,7 +5050,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 <select
                   value={audioFormat}
                   onChange={(e) => setAudioFormat(e.target.value as 'mp3' | 'flac')}
-                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                 >
                   <option value="mp3">{t('mp3Smaller')}</option>
                   <option value="flac">{t('flacLossless')}</option>
@@ -4763,7 +5061,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 <select
                   value={inferMethod}
                   onChange={(e) => setInferMethod(e.target.value as 'ode' | 'sde')}
-                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                 >
                   <option value="ode">{t('odeDeterministic')}</option>
                   <option value="sde">{t('sdeStochastic')}</option>
@@ -4806,7 +5104,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   className={`px-2 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1 ${
                     llmSwapping ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-500 cursor-wait' :
                     (llmStatus?.loaded && llmStatus?.model === lmModel) ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-500 cursor-default' :
-                    'bg-pink-500/20 border-pink-500/30 text-pink-400 hover:bg-pink-500/30 cursor-pointer'
+                    'bg-violet-500/20 border-violet-500/30 text-violet-400 hover:bg-violet-500/30 cursor-pointer'
                   }`}
                 >
                   {llmSwapping ? <Loader2 size={12} className="animate-spin" /> :
@@ -4843,7 +5141,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 </div>
                 <button
                   onClick={() => setRandomSeed(!randomSeed)}
-                  className={`w-10 h-5 rounded-full flex items-center transition-colors duration-200 px-0.5 border border-zinc-200 dark:border-white/5 ${randomSeed ? 'bg-pink-600' : 'bg-zinc-300 dark:bg-black/40'}`}
+                  className={`w-10 h-5 rounded-full flex items-center transition-colors duration-200 px-0.5 border border-zinc-200 dark:border-white/5 ${randomSeed ? 'bg-violet-600' : 'bg-zinc-300 dark:bg-black/40'}`}
                 >
                   <div className={`w-4 h-4 rounded-full bg-white transform transition-transform duration-200 shadow-sm ${randomSeed ? 'translate-x-5' : 'translate-x-0'}`} />
                 </button>
@@ -4868,7 +5166,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <button
                 onClick={() => !loraLoaded && setThinking(!thinking)}
                 disabled={loraLoaded}
-                className={`w-10 h-5 rounded-full flex items-center transition-colors duration-200 px-0.5 border border-zinc-200 dark:border-white/5 ${thinking ? 'bg-pink-600' : 'bg-zinc-300 dark:bg-black/40'} ${loraLoaded ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                className={`w-10 h-5 rounded-full flex items-center transition-colors duration-200 px-0.5 border border-zinc-200 dark:border-white/5 ${thinking ? 'bg-violet-600' : 'bg-zinc-300 dark:bg-black/40'} ${loraLoaded ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
               >
                 <div className={`w-4 h-4 rounded-full bg-white transform transition-transform duration-200 shadow-sm ${thinking ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
@@ -4981,7 +5279,20 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <p className="text-[11px] text-zinc-400 dark:text-zinc-500">{t('controlSourceAudio')}</p>
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" title="Advanced: precomputed audio codes for conditioning.">{t('audioCodes')}</label>
+              <div className="flex items-center gap-1.5">
+                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{t('audioCodes')}</label>
+                <button
+                  type="button"
+                  onClick={() => onShowInfo?.({
+                    title: 'Audio Codes (Códigos Semánticos)',
+                    content: `<p class="mb-1.5">Tokens semánticos a 5Hz que codifican la <span class="text-amber-300">melodía, ritmo y estructura</span> del audio. Cuando están presentes:</p><ul class="list-disc list-inside space-y-0.5 text-zinc-400"><li><span class="text-emerald-300">task_type</span> cambia automáticamente a <span class="text-orange-300">cover</span></li><li>El modelo sigue la estructura melódica de los códigos</li><li><span class="text-emerald-300">source audio</span> se ignora cuando hay códigos</li><li><span class="text-emerald-300">audio_cover_strength</span> controla la adherencia</li></ul><p class="mt-1.5 text-zinc-500">Usa "Convert to Codes" para extraer de un audio, o el Grabador de Voz que los extrae automáticamente.</p>`
+                  })}
+                  className="text-zinc-500 hover:text-violet-400 transition-colors"
+                  title="Ver info sobre Audio Codes"
+                >
+                  <Info size={12} />
+                </button>
+              </div>
               <textarea
                 value={audioCodes}
                 onChange={(e) => setAudioCodes(e.target.value)}
@@ -5035,7 +5346,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                 <select
                   value={taskType}
                   onChange={(e) => setTaskType(e.target.value)}
-                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 dark:focus:border-pink-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
+                  className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-xl px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors cursor-pointer [&>option]:bg-white [&>option]:dark:bg-zinc-800 [&>option]:text-zinc-900 [&>option]:dark:text-white"
                 >
                   <option value="text2music">{t('textToMusic')}</option>
                   <option value="audio2audio">{t('audio2audio')}</option>
@@ -5204,7 +5515,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             : [...selected, name];
                           setCompleteTrackClasses(next.join(','));
                         }}
-                        className="accent-pink-600"
+                        className="accent-violet-600"
                       />
                       {name}
                     </label>
@@ -5444,7 +5755,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                                   }}
                                 >
                                   <div
-                                    className="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full relative"
+                                    className="h-full bg-gradient-to-r from-violet-500 to-purple-500 rounded-full relative"
                                     style={{ width: modalTrackDuration > 0 ? `${(modalTrackTime / modalTrackDuration) * 100}%` : '0%' }}
                                   >
                                     <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
@@ -5527,7 +5838,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                                 }}
                               >
                                 <div
-                                  className="h-full bg-gradient-to-r from-pink-500 to-purple-500 rounded-full relative"
+                                  className="h-full bg-gradient-to-r from-violet-500 to-purple-500 rounded-full relative"
                                   style={{ width: modalTrackDuration > 0 ? `${(modalTrackTime / modalTrackDuration) * 100}%` : '0%' }}
                                 >
                                   <div className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full bg-white shadow-md opacity-0 group-hover/seek:opacity-100 transition-opacity" />
@@ -5602,7 +5913,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             {/* Header */}
             <div className="px-4 py-3 border-b border-zinc-200 dark:border-zinc-700 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <FolderSearch size={18} className="text-pink-500" />
+                <FolderSearch size={18} className="text-violet-500" />
                 <h3 className="text-sm font-bold text-zinc-900 dark:text-white">Select LoRA Adapter</h3>
               </div>
               <button onClick={() => setShowLoraBrowser(false)} className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors">
@@ -5621,7 +5932,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             <div className="flex-1 overflow-y-auto custom-scrollbar">
               {loraBrowseLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 size={24} className="animate-spin text-pink-500" />
+                  <Loader2 size={24} className="animate-spin text-violet-500" />
                 </div>
               ) : (
                 <div className="py-1">
@@ -5702,7 +6013,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               </button>
               <button
                 onClick={() => setShowLoraBrowser(false)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold bg-pink-500 text-white hover:bg-pink-600 transition-colors"
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-violet-500 text-white hover:bg-violet-600 transition-colors"
               >
                 Cancel
               </button>
@@ -6045,7 +6356,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     onClick={() => setInferMethod('ode')}
                     className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-colors ${
                       inferMethod === 'ode'
-                        ? 'bg-pink-500/20 text-pink-500 border border-pink-500/30'
+                        ? 'bg-violet-500/20 text-violet-500 border border-violet-500/30'
                         : 'bg-zinc-100 dark:bg-zinc-700/50 text-zinc-500 dark:text-zinc-400 border border-transparent hover:border-zinc-300 dark:hover:border-zinc-600'
                     }`}
                     title="ODE: Deterministic, consistent results for the same seed."
@@ -6079,7 +6390,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   type="checkbox"
                   checked={useCotMetas}
                   onChange={() => setUseCotMetas(!useCotMetas)}
-                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-pink-500"
+                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-violet-500"
                 />
                 <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">Metas</span>
               </label>
@@ -6088,7 +6399,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   type="checkbox"
                   checked={useCotCaption}
                   onChange={() => setUseCotCaption(!useCotCaption)}
-                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-pink-500"
+                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-violet-500"
                 />
                 <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">Caption</span>
               </label>
@@ -6097,7 +6408,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                   type="checkbox"
                   checked={useCotLanguage}
                   onChange={() => setUseCotLanguage(!useCotLanguage)}
-                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-pink-500"
+                  className="w-3 h-3 rounded border-zinc-300 dark:border-zinc-600 accent-violet-500"
                 />
                 <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400">Language</span>
               </label>
@@ -6110,7 +6421,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
 
         {activeJobCount > 0 && (
           <div className="flex items-center justify-center gap-2 text-[11px] font-medium text-zinc-500 dark:text-zinc-400">
-            <Loader2 size={12} className="animate-spin text-pink-500" />
+            <Loader2 size={12} className="animate-spin text-violet-500" />
             <span>{activeJobCount} / {maxConcurrentJobs} {activeJobCount === 1 ? 'job' : 'jobs'} running</span>
           </div>
         )}
@@ -6120,7 +6431,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             className={`flex-1 h-12 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-[filter] duration-150 transform active:scale-[0.98] shadow-lg hover:brightness-110 ${
               activeJobCount >= maxConcurrentJobs
                 ? 'bg-zinc-400 dark:bg-zinc-600 text-white/70 cursor-not-allowed'
-                : 'bg-gradient-to-r from-orange-500 to-pink-600 text-white'
+                : 'bg-gradient-to-r from-orange-500 to-violet-600 text-white'
             }`}
             disabled={activeJobCount >= maxConcurrentJobs || !isAuthenticated || isSeparating}
           >
@@ -6142,7 +6453,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               className={`h-12 px-4 rounded-xl font-bold text-sm flex items-center justify-center gap-1.5 transition-[filter] duration-150 transform active:scale-[0.98] shadow-lg hover:brightness-110 ${
                 activeJobCount >= maxConcurrentJobs
                   ? 'bg-zinc-400 dark:bg-zinc-600 text-white/70 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-violet-500 to-indigo-600 text-white'
+                  : 'bg-gradient-to-r from-violet-500 to-violet-600 text-white'
               }`}
               disabled={activeJobCount >= maxConcurrentJobs || !isAuthenticated || isSeparating}
               title="Generate section by section (Suno-style): parses [Verse], [Chorus], etc. and generates each section sequentially for better structure alignment."

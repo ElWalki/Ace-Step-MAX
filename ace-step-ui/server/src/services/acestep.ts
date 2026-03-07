@@ -174,8 +174,8 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
   const isThinking = params.thinking ?? false;
   const isEnhance = params.enhance ?? false;
 
-  // Inject LoRA trigger tag into the prompt if configured
-  if (params.loraTriggerTag && params.loraTagPosition && params.loraTagPosition !== 'off') {
+  // Inject LoRA trigger tag into the prompt if configured AND LoRA is enabled
+  if (params.loraEnabled !== false && params.loraTriggerTag && params.loraTagPosition && params.loraTagPosition !== 'off') {
     const tag = params.loraTriggerTag.trim();
     if (tag) {
       if (params.loraTagPosition === 'prepend') {

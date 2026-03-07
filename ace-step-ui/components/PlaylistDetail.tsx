@@ -102,7 +102,7 @@ export const PlaylistDetail: React.FC<PlaylistDetailProps> = ({ playlistId, onBa
     const gradients = [
         'from-purple-900 to-black',
         'from-blue-900 to-black',
-        'from-indigo-900 to-black',
+        'from-violet-900 to-black',
         'from-rose-900 to-black',
     ];
     const bgGradient = gradients[playlist.name.length % gradients.length];

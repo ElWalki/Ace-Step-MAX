@@ -183,11 +183,11 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
 
     // Generate random gradient for banner fallback
     const gradients = [
-        'from-purple-600 via-pink-600 to-red-600',
-        'from-blue-600 via-purple-600 to-pink-600',
+        'from-purple-600 via-violet-600 to-red-600',
+        'from-blue-600 via-purple-600 to-violet-600',
         'from-green-600 via-teal-600 to-blue-600',
-        'from-orange-600 via-red-600 to-pink-600',
-        'from-indigo-600 via-purple-600 to-pink-600',
+        'from-orange-600 via-red-600 to-violet-600',
+        'from-violet-600 via-purple-600 to-violet-600',
     ];
     const bannerGradient = gradients[username.length % gradients.length];
     const primaryBadge = profileUser.badges?.[0];
@@ -204,7 +204,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
         : primaryBadge?.color === 'orange'
         ? 'ring-orange-400/80 shadow-orange-500/30'
         : primaryBadge?.color === 'pink'
-        ? 'ring-pink-400/80 shadow-pink-500/30'
+        ? 'ring-violet-400/80 shadow-violet-500/30'
         : 'ring-zinc-500/50 shadow-zinc-500/20';
     const paidPulse = profileUser.accountTier && profileUser.accountTier !== 'free'
         ? 'group-hover/avatar:animate-[wiggle_0.6s_ease-in-out] group-hover/avatar:rotate-1'
@@ -212,15 +212,15 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
     const paidNameStyle = primaryBadge?.color === 'yellow'
         ? 'bg-gradient-to-r from-yellow-300 via-amber-300 to-orange-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(251,191,36,0.45)]'
         : primaryBadge?.color === 'purple'
-        ? 'bg-gradient-to-r from-fuchsia-400 via-purple-500 to-indigo-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(168,85,247,0.45)]'
+        ? 'bg-gradient-to-r from-fuchsia-400 via-purple-500 to-violet-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(168,85,247,0.45)]'
         : primaryBadge?.color === 'blue'
-        ? 'bg-gradient-to-r from-sky-400 via-blue-500 to-indigo-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(59,130,246,0.45)]'
+        ? 'bg-gradient-to-r from-sky-400 via-blue-500 to-violet-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(59,130,246,0.45)]'
         : primaryBadge?.color === 'teal'
         ? 'bg-gradient-to-r from-teal-300 via-emerald-400 to-cyan-400 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(45,212,191,0.45)]'
         : primaryBadge?.color === 'orange'
         ? 'bg-gradient-to-r from-orange-300 via-amber-400 to-yellow-300 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(251,146,60,0.4)]'
         : primaryBadge?.color === 'pink'
-        ? 'bg-gradient-to-r from-pink-400 via-rose-500 to-fuchsia-500 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(244,114,182,0.45)]'
+        ? 'bg-gradient-to-r from-violet-400 via-rose-500 to-fuchsia-500 text-transparent bg-clip-text drop-shadow-[0_2px_12px_rgba(244,114,182,0.45)]'
         : '';
 
     // Banner Style
@@ -310,15 +310,15 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                                     badge.color === 'yellow'
                                                         ? 'from-yellow-300 via-amber-300 to-orange-400 text-amber-950 shadow-[0_0_20px_rgba(251,191,36,0.45)]'
                                                         : badge.color === 'purple'
-                                                        ? 'from-fuchsia-400 via-purple-500 to-indigo-500 text-white shadow-[0_0_20px_rgba(168,85,247,0.45)]'
+                                                        ? 'from-fuchsia-400 via-purple-500 to-violet-500 text-white shadow-[0_0_20px_rgba(168,85,247,0.45)]'
                                                         : badge.color === 'blue'
-                                                        ? 'from-sky-400 via-blue-500 to-indigo-500 text-white shadow-[0_0_18px_rgba(59,130,246,0.45)]'
+                                                        ? 'from-sky-400 via-blue-500 to-violet-500 text-white shadow-[0_0_18px_rgba(59,130,246,0.45)]'
                                                         : badge.color === 'teal'
                                                         ? 'from-teal-300 via-emerald-400 to-cyan-400 text-emerald-950 shadow-[0_0_18px_rgba(45,212,191,0.45)]'
                                                         : badge.color === 'orange'
                                                         ? 'from-orange-300 via-amber-400 to-yellow-300 text-amber-950 shadow-[0_0_16px_rgba(251,146,60,0.4)]'
                                                         : badge.color === 'pink'
-                                                        ? 'from-pink-400 via-rose-500 to-fuchsia-500 text-white shadow-[0_0_18px_rgba(244,114,182,0.45)]'
+                                                        ? 'from-violet-400 via-rose-500 to-fuchsia-500 text-white shadow-[0_0_18px_rgba(244,114,182,0.45)]'
                                                         : badge.color === 'green'
                                                         ? 'from-emerald-300 via-green-400 to-lime-300 text-emerald-950 shadow-[0_0_16px_rgba(34,197,94,0.4)]'
                                                         : 'from-zinc-200 via-zinc-300 to-zinc-200 text-zinc-700 dark:from-zinc-700 dark:via-zinc-600 dark:to-zinc-700 dark:text-zinc-100';
@@ -441,22 +441,22 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                             </div>
                                             {isCurrentlyPlaying && (
                                                 <div className="absolute bottom-2 left-2 flex items-center gap-1">
-                                                    <span className="w-1 h-3 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
-                                                    <span className="w-1 h-4 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
-                                                    <span className="w-1 h-2 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
-                                                    <span className="w-1 h-5 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '450ms' }} />
+                                                    <span className="w-1 h-3 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
+                                                    <span className="w-1 h-4 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
+                                                    <span className="w-1 h-2 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
+                                                    <span className="w-1 h-5 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '450ms' }} />
                                                 </div>
                                             )}
                                         </div>
                                         <div className="flex items-start justify-between gap-2">
                                             <div className="flex-1 min-w-0">
-                                                <h3 className={`font-semibold truncate mb-1 text-sm md:text-base ${isCurrentSong ? 'text-pink-500' : 'text-zinc-900 dark:text-white'}`}>{song.title}</h3>
+                                                <h3 className={`font-semibold truncate mb-1 text-sm md:text-base ${isCurrentSong ? 'text-violet-500' : 'text-zinc-900 dark:text-white'}`}>{song.title}</h3>
                                                 <p className="text-xs md:text-sm text-zinc-500 dark:text-zinc-400 truncate mb-2">{song.style}</p>
                                             </div>
                                             {onToggleLike && (
                                                 <button
                                                     onClick={(e) => { e.stopPropagation(); onToggleLike(song.id); }}
-                                                    className={`p-1.5 rounded-full transition-colors ${isLiked ? 'text-pink-500' : 'text-zinc-400 hover:text-pink-500'}`}
+                                                    className={`p-1.5 rounded-full transition-colors ${isLiked ? 'text-violet-500' : 'text-zinc-400 hover:text-violet-500'}`}
                                                 >
                                                     <Heart size={16} className={isLiked ? 'fill-current' : ''} />
                                                 </button>
@@ -464,7 +464,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                         </div>
                                         <div className="flex items-center gap-3 text-xs text-zinc-500">
                                             <span className="flex items-center gap-1">
-                                                <Heart size={12} className={isLiked ? 'fill-pink-500 text-pink-500' : ''} /> {song.likeCount || 0}
+                                                <Heart size={12} className={isLiked ? 'fill-violet-500 text-violet-500' : ''} /> {song.likeCount || 0}
                                             </span>
                                             <span className="flex items-center gap-1">
                                                 <Eye size={12} /> {song.viewCount || 0}
@@ -515,7 +515,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                 return (
                                     <div
                                         key={song.id}
-                                        className={`group flex items-center gap-3 md:gap-4 p-2 md:p-3 rounded-lg cursor-pointer transition-colors ${isCurrentSong ? 'bg-pink-50 dark:bg-pink-500/10' : 'hover:bg-zinc-100 dark:hover:bg-zinc-900'}`}
+                                        className={`group flex items-center gap-3 md:gap-4 p-2 md:p-3 rounded-lg cursor-pointer transition-colors ${isCurrentSong ? 'bg-violet-50 dark:bg-violet-500/10' : 'hover:bg-zinc-100 dark:hover:bg-zinc-900'}`}
                                     >
                                         <div
                                             onClick={() => onPlaySong(song, displaySongs)}
@@ -531,17 +531,17 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                             </div>
                                             {isCurrentlyPlaying && (
                                                 <div className="absolute bottom-1 left-1 flex items-center gap-0.5">
-                                                    <span className="w-0.5 h-2 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
-                                                    <span className="w-0.5 h-3 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
-                                                    <span className="w-0.5 h-1.5 bg-pink-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
+                                                    <span className="w-0.5 h-2 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '0ms' }} />
+                                                    <span className="w-0.5 h-3 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '150ms' }} />
+                                                    <span className="w-0.5 h-1.5 bg-violet-500 rounded-full animate-pulse" style={{ animationDelay: '300ms' }} />
                                                 </div>
                                             )}
                                         </div>
                                         <div className="flex-1 min-w-0" onClick={() => onPlaySong(song, displaySongs)}>
-                                            <h3 className={`font-semibold truncate text-sm md:text-base ${isCurrentSong ? 'text-pink-500' : 'text-zinc-900 dark:text-white'}`}>{song.title}</h3>
+                                            <h3 className={`font-semibold truncate text-sm md:text-base ${isCurrentSong ? 'text-violet-500' : 'text-zinc-900 dark:text-white'}`}>{song.title}</h3>
                                             <p className="text-xs md:text-sm text-zinc-500 dark:text-zinc-400 truncate">{song.style}</p>
                                             <div className="flex items-center gap-3 text-xs text-zinc-500 mt-1">
-                                                <span className="flex items-center gap-1"><Heart size={10} className={isLiked ? 'fill-pink-500 text-pink-500' : ''} /> {song.likeCount || 0}</span>
+                                                <span className="flex items-center gap-1"><Heart size={10} className={isLiked ? 'fill-violet-500 text-violet-500' : ''} /> {song.likeCount || 0}</span>
                                                 <span className="flex items-center gap-1"><Play size={10} /> {song.viewCount || 0}</span>
                                                 <span>{song.duration}</span>
                                             </div>
@@ -549,7 +549,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                         {onToggleLike && (
                                             <button
                                                 onClick={(e) => { e.stopPropagation(); onToggleLike(song.id); }}
-                                                className={`p-2 rounded-full transition-colors flex-shrink-0 ${isLiked ? 'text-pink-500' : 'text-zinc-400 hover:text-pink-500'}`}
+                                                className={`p-2 rounded-full transition-colors flex-shrink-0 ${isLiked ? 'text-violet-500' : 'text-zinc-400 hover:text-violet-500'}`}
                                             >
                                                 <Heart size={18} className={isLiked ? 'fill-current' : ''} />
                                             </button>
@@ -577,7 +577,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                     onClick={() => onNavigateToPlaylist?.(playlist.id)}
                                     className="group relative flex-shrink-0 w-36 md:w-48 cursor-pointer"
                                 >
-                                    <div className="aspect-square rounded-lg bg-gradient-to-br from-indigo-600 to-purple-700 mb-2 md:mb-3 flex items-center justify-center relative overflow-hidden">
+                                    <div className="aspect-square rounded-lg bg-gradient-to-br from-violet-600 to-purple-700 mb-2 md:mb-3 flex items-center justify-center relative overflow-hidden">
                                         <MusicIcon size={48} className="text-white/30 md:w-16 md:h-16" />
                                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                             <div className="w-12 h-12 md:w-14 md:h-14 rounded-full bg-white flex items-center justify-center">
@@ -692,7 +692,7 @@ export const UserProfile: React.FC<UserProfileProps> = ({ username, onBack, onPl
                                     onChange={(e) => setEditBio(e.target.value)}
                                     placeholder={t('bioPlaceholder')}
                                     rows={4}
-                                    className="w-full bg-zinc-50 dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-pink-500 dark:focus:border-indigo-500 transition-colors resize-none"
+                                    className="w-full bg-zinc-50 dark:bg-black border border-zinc-300 dark:border-zinc-800 rounded-lg px-3 py-2 text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-600 focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 transition-colors resize-none"
                                 />
                             </div>
                         </div>

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, User as UserIcon, Palette, Info, Edit3, ExternalLink, Globe, ChevronDown, Github, RotateCcw, Loader2, AlertTriangle, Cpu } from 'lucide-react';
+import { X, User as UserIcon, Palette, Info, Edit3, ExternalLink, Globe, ChevronDown, Github, RotateCcw, Loader2, AlertTriangle, Cpu, Bot, Wifi, WifiOff, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { EditProfileModal } from './EditProfileModal';
 import { generateApi, vramApi } from '../services/api';
+import { loadConfig, saveConfig, testConnection, listModels, PROVIDERS, LLMProviderConfig, LLMProvider, PROVIDER_DEFAULTS, LLMConnectionTest } from '../services/llmProviderService';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -28,13 +29,70 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
     const [isForceCleanup, setIsForceCleanup] = useState(false);
     const [cleanupResult, setCleanupResult] = useState<string | null>(null);
 
+    // ── AI Assistant Config ──
+    const [llmConfig, setLlmConfig] = useState<LLMProviderConfig>(() => loadConfig());
+    const [showApiKey, setShowApiKey] = useState(false);
+    const [isTesting, setIsTesting] = useState(false);
+    const [testResult, setTestResult] = useState<LLMConnectionTest | null>(null);
+    const [availableModels, setAvailableModels] = useState<string[]>([]);
+    const [isLoadingModels, setIsLoadingModels] = useState(false);
+
+    const handleProviderChange = (provider: LLMProvider) => {
+        const defaults = PROVIDER_DEFAULTS[provider];
+        const newConfig: LLMProviderConfig = {
+            provider,
+            apiUrl: defaults.apiUrl,
+            apiKey: '',
+            model: defaults.model || '',
+            displayName: defaults.displayName,
+        };
+        setLlmConfig(newConfig);
+        saveConfig(newConfig);
+        setTestResult(null);
+        setAvailableModels([]);
+    };
+
+    const updateLlmField = (field: keyof LLMProviderConfig, value: string) => {
+        const updated = { ...llmConfig, [field]: value };
+        setLlmConfig(updated);
+        saveConfig(updated);
+    };
+
+    const handleTestConnection = async () => {
+        setIsTesting(true);
+        setTestResult(null);
+        try {
+            const result = await testConnection(llmConfig);
+            setTestResult(result);
+            if (result.models && result.models.length > 0) {
+                setAvailableModels(result.models);
+            }
+        } catch (e: any) {
+            setTestResult({ success: false, message: e?.message || 'Test failed' });
+        } finally {
+            setIsTesting(false);
+        }
+    };
+
+    const handleRefreshModels = async () => {
+        setIsLoadingModels(true);
+        try {
+            const models = await listModels(llmConfig);
+            setAvailableModels(models);
+            if (models.length > 0 && !llmConfig.model) {
+                updateLlmField('model', models[0]);
+            }
+        } catch { /* ignore */ }
+        finally { setIsLoadingModels(false); }
+    };
+
     const handleScanVram = async () => {
         if (!token || isScanning) return;
         setIsScanning(true);
         setDiagnosticReport(null);
         try {
-            const result = await generateApi.vramDiagnostic(token);
-            setDiagnosticReport(result?.data || result);
+            const result = await vramApi.status(token);
+            setDiagnosticReport(result);
         } catch (err) {
             setDiagnosticReport({ error: 'Failed to scan VRAM' });
         } finally {
@@ -47,13 +105,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
         setIsForceCleanup(true);
         setCleanupResult(null);
         try {
-            const result = await generateApi.vramForceCleanup(token);
-            const actions = result?.data?.actions || result?.actions || [];
-            setCleanupResult(`✅ Cleanup done: ${actions.length} actions`);
+            const result = await vramApi.purge(token);
+            const freedMb = result?.nvidia_freed_mb ?? 0;
+            setCleanupResult(`✅ Purge done — freed ${freedMb.toFixed(0)} MB VRAM`);
             // Auto-rescan after cleanup
             setTimeout(() => handleScanVram(), 1000);
         } catch (err) {
-            setCleanupResult('❌ Force cleanup failed');
+            setCleanupResult('❌ VRAM purge failed');
         } finally {
             setIsForceCleanup(false);
             setTimeout(() => setCleanupResult(null), 8000);
@@ -136,7 +194,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                     {/* User Profile Section */}
                     <div className="bg-zinc-50 dark:bg-zinc-800/50 rounded-xl p-6">
                         <div className="flex items-center gap-4">
-                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg overflow-hidden">
+                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-2xl font-bold text-white shadow-lg overflow-hidden">
                                 {user.avatar_url ? (
                                     <img src={user.avatar_url} alt={user.username} className="w-full h-full object-cover" />
                                 ) : (
@@ -155,7 +213,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                         onClose();
                                         setIsEditProfileOpen(true);
                                     }}
-                                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors"
+                                    className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-700 transition-colors"
                                 >
                                     <Edit3 size={16} />
                                     {t('editProfile')}
@@ -236,7 +294,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                 <select
                                     value={language}
                                     onChange={(e) => setLanguage(e.target.value as 'en' | 'zh' | 'ja' | 'ko')}
-                                    className="w-full appearance-none py-3 px-4 pr-10 rounded-lg border-2 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium transition-colors hover:border-zinc-400 dark:hover:border-zinc-600 focus:outline-none focus:border-indigo-500 dark:focus:border-indigo-500 cursor-pointer"
+                                    className="w-full appearance-none py-3 px-4 pr-10 rounded-lg border-2 border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white font-medium transition-colors hover:border-zinc-400 dark:hover:border-zinc-600 focus:outline-none focus:border-violet-500 dark:focus:border-violet-500 cursor-pointer"
                                 >
                                     <option value="en">{t('english')}</option>
                                     <option value="zh">{t('chinese')}</option>
@@ -262,7 +320,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                 <button
                                     onClick={theme === 'dark' ? onToggleTheme : undefined}
                                     className={`flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-colors ${theme === 'light'
-                                            ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                                            ? 'border-violet-500 bg-violet-50 text-violet-700'
                                             : 'border-zinc-300 dark:border-zinc-700 hover:border-zinc-400 dark:hover:border-zinc-600'
                                         }`}
                                 >
@@ -271,13 +329,162 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, t
                                 <button
                                     onClick={theme === 'light' ? onToggleTheme : undefined}
                                     className={`flex-1 py-3 px-4 rounded-lg border-2 font-medium transition-colors ${theme === 'dark'
-                                            ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
+                                            ? 'border-violet-500 bg-violet-950 text-violet-300'
                                             : 'border-zinc-300 dark:border-zinc-700 hover:border-zinc-400 dark:hover:border-zinc-600'
                                         }`}
                                 >
                                     {t('dark')}
                                 </button>
                             </div>
+                        </div>
+                    </div>
+
+                    {/* AI Assistant Section */}
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-zinc-900 dark:text-white">
+                            <Bot size={20} />
+                            <h3 className="font-semibold">AI Assistant</h3>
+                        </div>
+                        <div className="pl-7 space-y-4">
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                                Configure the LLM that powers the music assistant chat. Use a local model (LM Studio, Ollama) or a cloud API (Gemini, Claude).
+                            </p>
+
+                            {/* Provider Selector */}
+                            <div className="space-y-2">
+                                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Provider</label>
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                                    {PROVIDERS.map(p => (
+                                        <button
+                                            key={p.id}
+                                            onClick={() => handleProviderChange(p.id)}
+                                            className={`flex items-center gap-2 py-2.5 px-3 rounded-lg border-2 text-xs font-medium transition-all ${
+                                                llmConfig.provider === p.id
+                                                    ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300'
+                                                    : 'border-zinc-200 dark:border-zinc-700 hover:border-zinc-400 dark:hover:border-zinc-500 text-zinc-700 dark:text-zinc-300'
+                                            }`}
+                                        >
+                                            <span className="text-base">{p.icon}</span>
+                                            <div className="text-left">
+                                                <div className="font-semibold">{p.name}</div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                                <p className="text-[10px] text-zinc-400 dark:text-zinc-500 mt-1">
+                                    {PROVIDERS.find(p => p.id === llmConfig.provider)?.description}
+                                </p>
+                            </div>
+
+                            {/* API URL */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                                    API URL {PROVIDERS.find(p => p.id === llmConfig.provider)?.isLocal && '(local server)'}
+                                </label>
+                                <input
+                                    type="text"
+                                    value={llmConfig.apiUrl}
+                                    onChange={(e) => updateLlmField('apiUrl', e.target.value)}
+                                    placeholder={PROVIDER_DEFAULTS[llmConfig.provider].apiUrl}
+                                    className="w-full py-2.5 px-3 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white text-sm font-mono focus:outline-none focus:border-purple-500 transition-colors"
+                                />
+                            </div>
+
+                            {/* API Key (only for cloud providers or if user wants) */}
+                            <div className="space-y-1.5">
+                                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                                    API Key {!PROVIDERS.find(p => p.id === llmConfig.provider)?.needsApiKey && '(optional for local)'}
+                                </label>
+                                <div className="relative">
+                                    <input
+                                        type={showApiKey ? 'text' : 'password'}
+                                        value={llmConfig.apiKey}
+                                        onChange={(e) => updateLlmField('apiKey', e.target.value)}
+                                        placeholder={PROVIDERS.find(p => p.id === llmConfig.provider)?.needsApiKey ? 'Required' : 'Not needed for local'}
+                                        className="w-full py-2.5 px-3 pr-10 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white text-sm font-mono focus:outline-none focus:border-purple-500 transition-colors"
+                                    />
+                                    <button
+                                        onClick={() => setShowApiKey(!showApiKey)}
+                                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                                    >
+                                        {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Model */}
+                            <div className="space-y-1.5">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Model</label>
+                                    {(llmConfig.provider === 'lmstudio' || llmConfig.provider === 'ollama' || llmConfig.provider === 'custom') && (
+                                        <button
+                                            onClick={handleRefreshModels}
+                                            disabled={isLoadingModels}
+                                            className="flex items-center gap-1 text-[10px] text-purple-500 hover:text-purple-400 transition-colors"
+                                        >
+                                            <RefreshCw size={10} className={isLoadingModels ? 'animate-spin' : ''} />
+                                            {isLoadingModels ? 'Loading...' : 'Detect models'}
+                                        </button>
+                                    )}
+                                </div>
+                                {availableModels.length > 0 ? (
+                                    <div className="relative">
+                                        <select
+                                            value={llmConfig.model}
+                                            onChange={(e) => updateLlmField('model', e.target.value)}
+                                            className="w-full appearance-none py-2.5 px-3 pr-8 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white text-sm focus:outline-none focus:border-purple-500 transition-colors cursor-pointer"
+                                        >
+                                            {availableModels.map(m => (
+                                                <option key={m} value={m}>{m}</option>
+                                            ))}
+                                        </select>
+                                        <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+                                    </div>
+                                ) : (
+                                    <input
+                                        type="text"
+                                        value={llmConfig.model}
+                                        onChange={(e) => updateLlmField('model', e.target.value)}
+                                        placeholder={PROVIDER_DEFAULTS[llmConfig.provider].model || 'Enter model name...'}
+                                        className="w-full py-2.5 px-3 rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-white text-sm font-mono focus:outline-none focus:border-purple-500 transition-colors"
+                                    />
+                                )}
+                            </div>
+
+                            {/* Test Connection */}
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={handleTestConnection}
+                                    disabled={isTesting}
+                                    className="flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-purple-600 text-white text-sm font-medium hover:bg-purple-500 transition-colors disabled:opacity-50"
+                                >
+                                    {isTesting ? (
+                                        <Loader2 size={14} className="animate-spin" />
+                                    ) : testResult?.success ? (
+                                        <Wifi size={14} />
+                                    ) : (
+                                        <WifiOff size={14} />
+                                    )}
+                                    {isTesting ? 'Testing...' : 'Test Connection'}
+                                </button>
+                            </div>
+                            {testResult && (
+                                <div className={`flex items-start gap-2 p-2.5 rounded-lg text-xs ${
+                                    testResult.success
+                                        ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800'
+                                        : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800'
+                                }`}>
+                                    <div className="flex-1">
+                                        <p className="font-medium">{testResult.message}</p>
+                                        {testResult.latencyMs !== undefined && (
+                                            <p className="text-[10px] opacity-70 mt-0.5">Latency: {testResult.latencyMs}ms</p>
+                                        )}
+                                        {testResult.models && testResult.models.length > 1 && (
+                                            <p className="text-[10px] opacity-70 mt-0.5">Models: {testResult.models.slice(0, 5).join(', ')}{testResult.models.length > 5 ? ` +${testResult.models.length - 5} more` : ''}</p>
+                                        )}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
 

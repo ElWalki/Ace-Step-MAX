@@ -8,6 +8,7 @@ import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 import { GenerationConfigModal } from './GenerationConfigModal';
+import { StemSeparationModal } from './StemSeparationModal';
 
 interface RightSidebarProps {
     song: Song | null;
@@ -40,6 +41,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
     const [titleError, setTitleError] = useState<string | null>(null);
     const [isSavingTitle, setIsSavingTitle] = useState(false);
     const [configOpen, setConfigOpen] = useState(false);
+    const [stemModalOpen, setStemModalOpen] = useState(false);
 
     useEffect(() => {
         if (song) {
@@ -211,7 +213,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                                     cancelTitleEdit();
                                                 }
                                             }}
-                                            className="w-full text-xl font-bold text-zinc-900 dark:text-white bg-white dark:bg-black/30 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-pink-500/40"
+                                            className="w-full text-xl font-bold text-zinc-900 dark:text-white bg-white dark:bg-black/30 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-violet-500/40"
                                             maxLength={120}
                                             autoFocus
                                         />
@@ -219,7 +221,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                             <button
                                                 onClick={() => void saveTitleEdit()}
                                                 disabled={isSavingTitle}
-                                                className="px-3 py-1.5 rounded-md text-xs font-semibold bg-pink-600 text-white hover:bg-pink-700 disabled:opacity-60"
+                                                className="px-3 py-1.5 rounded-md text-xs font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-60"
                                             >
                                                 {isSavingTitle ? t('saving') : t('save')}
                                             </button>
@@ -265,6 +267,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                                     onClose={() => setShowMenu(false)}
                                     isOwner={isOwner}
                                     onCreateVideo={onOpenVideo}
+                                    onExtractStems={() => setStemModalOpen(true)}
                                     onReusePrompt={() => onReuse?.(song)}
                                     onDelete={() => onDelete?.(song)}
                                     onAddToPlaylist={() => onAddToPlaylist?.(song)}
@@ -275,7 +278,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                         </div>
 
                         <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-sm ring-2 ring-white dark:ring-black">
+                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center text-xs font-bold text-white shadow-sm ring-2 ring-white dark:ring-black">
                                 {song.creator ? song.creator[0].toUpperCase() : 'A'}
                             </div>
                             <div className="flex flex-col">
@@ -318,14 +321,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                             <Repeat size={18} strokeWidth={1.5} />
                         </button>
                         <button
-                            onClick={() => {
-                                if (!song?.audioUrl) return;
-                                const baseUrl = window.location.port === '3000'
-                                    ? `${window.location.protocol}//${window.location.hostname}:3001`
-                                    : window.location.origin;
-                                const audioUrl = song.audioUrl.startsWith('http') ? song.audioUrl : `${baseUrl}${song.audioUrl}`;
-                                window.open(`${baseUrl}/demucs-web/?audioUrl=${encodeURIComponent(audioUrl)}`, '_blank');
-                            }}
+                            onClick={() => setStemModalOpen(true)}
                             title={t('extractStems')}
                             className="p-3 text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white hover:bg-zinc-300/50 dark:hover:bg-white/10 rounded-xl transition-colors duration-150"
                         >
@@ -553,6 +549,13 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
                     onClose={() => setConfigOpen(false)}
                 />
             )}
+            {song && (
+                <StemSeparationModal
+                    isOpen={stemModalOpen}
+                    onClose={() => setStemModalOpen(false)}
+                    song={song}
+                />
+            )}
         </div>
     );
 };
@@ -560,7 +563,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ song, onClose, onOpe
 const ActionButton: React.FC<{ icon: React.ReactNode; label?: string; active?: boolean; onClick?: () => void }> = ({ icon, label, active, onClick }) => (
     <button
         onClick={onClick}
-        className={`flex items-center gap-1.5 ${active ? 'text-pink-600 dark:text-pink-500' : 'text-zinc-400'} hover:text-black dark:hover:text-white transition-colors`}
+        className={`flex items-center gap-1.5 ${active ? 'text-violet-600 dark:text-violet-500' : 'text-zinc-400'} hover:text-black dark:hover:text-white transition-colors`}
     >
         {icon}
         {label && <span className="text-xs font-semibold">{label}</span>}

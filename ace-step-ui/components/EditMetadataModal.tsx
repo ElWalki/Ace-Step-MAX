@@ -25,6 +25,7 @@ const KEY_OPTIONS = [
 
 const TIME_SIG_OPTIONS = [
   { value: '', label: 'Auto' },
+  { value: '1', label: '1/4' },
   { value: '2', label: '2/4' },
   { value: '3', label: '3/4' },
   { value: '4', label: '4/4' },
@@ -128,7 +129,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
               type="text"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500"
+              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500"
             />
           </div>
 
@@ -139,7 +140,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
               type="text"
               value={style}
               onChange={(e) => setStyle(e.target.value)}
-              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500"
+              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500"
             />
           </div>
 
@@ -154,7 +155,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
                 value={bpm}
                 onChange={(e) => setBpm(e.target.value)}
                 placeholder="Auto"
-                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500"
+                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500"
               />
             </div>
             <div className="space-y-1.5">
@@ -162,7 +163,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
               <select
                 value={keyScale}
                 onChange={(e) => setKeyScale(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 cursor-pointer"
+                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 cursor-pointer"
               >
                 <option value="">Auto</option>
                 {KEY_OPTIONS.filter(k => k).map(k => (
@@ -178,7 +179,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
             <select
               value={timeSig}
               onChange={(e) => setTimeSig(e.target.value)}
-              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-pink-500 cursor-pointer"
+              className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-3 py-2 text-sm text-zinc-900 dark:text-white focus:outline-none focus:border-violet-500 cursor-pointer"
             >
               {TIME_SIG_OPTIONS.map(ts => (
                 <option key={ts.value} value={ts.value}>{ts.label}</option>
@@ -204,7 +205,7 @@ export const EditMetadataModal: React.FC<EditMetadataModalProps> = ({
           <button
             onClick={handleSave}
             disabled={saving}
-            className="px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-pink-500 to-purple-600 text-white hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-2"
+            className="px-4 py-2 rounded-lg text-sm font-semibold bg-gradient-to-r from-violet-500 to-purple-600 text-white hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-2"
           >
             {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
             Save

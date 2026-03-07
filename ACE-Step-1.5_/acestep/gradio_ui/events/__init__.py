@@ -166,7 +166,8 @@ def setup_event_handlers(demo, dit_handler, llm_handler, dataset_handler, datase
     generation_section["convert_src_to_codes_btn"].click(
         fn=lambda src: gen_h.convert_src_audio_to_codes_wrapper(dit_handler, src),
         inputs=[generation_section["src_audio"]],
-        outputs=[generation_section["text2music_audio_code_string"]]
+        outputs=[generation_section["text2music_audio_code_string"]],
+        api_name="convert_src_audio_to_codes"
     )
     
     # ========== Instruction UI Updates ==========

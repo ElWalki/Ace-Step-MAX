@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "saved_at": "2026-03-05",
+    "run_name": "lora_acestep-v15-turbo_20260305_0228",
+    "notes": "Buenos resultados con 6-7 canciones + misma letra con variaciones Suno. Rank 32 + 200 epochs + cosine scheduler con 4 restarts."
+  },
+  "model": {
+    "variant": "acestep-v15-turbo",
+    "adapter": "lora",
+    "checkpoint_dir": "D:\\espacios de trabajo\\vscode\\acestep\\ACE-Step-1.5_\\checkpoints"
+  },
+  "device": {
+    "device": "auto",
+    "precision": "fp16"
+  },
+  "lora": {
+    "rank": 32,
+    "alpha": "auto",
+    "dropout": 0.1,
+    "attention_targeting": "auto",
+    "mlp_ffn_layers": "auto",
+    "bias": "none"
+  },
+  "training": {
+    "learning_rate": 5e-5,
+    "optimizer": "adamw8bit",
+    "lr_scheduler": "cosine",
+    "custom_formula": "auto",
+    "batch_size": 1,
+    "grad_accumulation": 1,
+    "effective_batch": 1,
+    "max_epochs": 200,
+    "max_optimizer_steps": 0,
+    "dataset_repeats": 1,
+    "warmup_steps": 10,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1,
+    "noise_shift": 3,
+    "inference_steps": 150,
+    "seed": 42
+  },
+  "vram": {
+    "gradient_checkpointing": false,
+    "checkpointing_ratio": 0,
+    "offload_encoder": false
+  },
+  "chunking": {
+    "chunk_duration_s": "auto",
+    "coverage_decay_interval": "auto"
+  },
+  "corrected_training": {
+    "cfg_dropout_ratio": "auto",
+    "loss_weighting": "auto",
+    "snr_gamma": "auto"
+  },
+  "advanced": {
+    "ema_decay": 0.999,
+    "validation_split": 0,
+    "adaptive_timestep_ratio": 0,
+    "warmup_start_factor": 0.1,
+    "cosine_eta_min_ratio": 0.01,
+    "cosine_restarts_count": 4,
+    "step_level_best_interval": 0
+  },
+  "checkpointing": {
+    "save_every_n_epochs": 10,
+    "save_best_model": true,
+    "best_model_tracking_after_epoch": 50,
+    "early_stop_patience": 0,
+    "resume_from": "auto"
+  },
+  "logging": {
+    "tensorboard_dir": "auto",
+    "log_every_n_steps": 10,
+    "grad_norms_every_n_steps": 50
+  },
+  "dataset_info": {
+    "num_songs": "6-7",
+    "source": "Suno - misma letra con variaciones",
+    "result": "Buenos resultados"
+  }
+}
