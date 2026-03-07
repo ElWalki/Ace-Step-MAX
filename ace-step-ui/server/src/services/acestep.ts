@@ -466,6 +466,14 @@ export async function getBackendStatus(): Promise<BackendStatus> {
   return data as BackendStatus;
 }
 
+// Queue statistics from Python API /v1/stats
+export async function getQueueStats() {
+  const resp = await fetch(`${ACESTEP_API}/v1/stats`);
+  if (!resp.ok) throw new Error(`Queue stats failed: ${resp.status}`);
+  const json = await resp.json();
+  return json.data ?? json;
+}
+
 // Swap LLM model — unloads current, loads new one (blocking ~30-90s)
 export interface LlmSwapResult {
   success: boolean;
