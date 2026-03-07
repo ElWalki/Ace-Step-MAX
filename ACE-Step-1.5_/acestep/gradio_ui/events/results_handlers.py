@@ -472,6 +472,7 @@ def generate_with_progress(
     use_adg, cfg_interval_start, cfg_interval_end, shift, infer_method, custom_timesteps, audio_format, lm_temperature,
     think_checkbox, lm_cfg_scale, lm_top_k, lm_top_p, lm_negative_prompt,
     lm_repetition_penalty,
+    lm_no_repeat_ngram_size,
     use_cot_metas, use_cot_caption, use_cot_language, is_format_caption,
     constrained_decoding_debug,
     allow_lm_batch,
@@ -479,6 +480,9 @@ def generate_with_progress(
     auto_lrc,
     score_scale,
     lm_batch_chunk_size,
+    apg_norm_threshold=2.5,
+    apg_momentum=-0.75,
+    apg_eta=0.0,
     progress=gr.Progress(track_tqdm=True),
 ):
     """Generate audio with progress tracking"""
@@ -558,10 +562,14 @@ def generate_with_progress(
         lm_top_p=lm_top_p,
         lm_negative_prompt=lm_negative_prompt,
         lm_repetition_penalty=lm_repetition_penalty if lm_repetition_penalty else 1.0,
+        lm_no_repeat_ngram_size=int(lm_no_repeat_ngram_size) if lm_no_repeat_ngram_size else 0,
         use_cot_metas=actual_use_cot_metas,
         use_cot_caption=use_cot_caption,
         use_cot_language=use_cot_language,
         use_constrained_decoding=True,
+        apg_norm_threshold=apg_norm_threshold if apg_norm_threshold is not None else 2.5,
+        apg_momentum=apg_momentum if apg_momentum is not None else -0.75,
+        apg_eta=apg_eta if apg_eta is not None else 0.0,
     )
     # seed string to list
     if isinstance(seed, str) and seed.strip():
@@ -1400,9 +1408,11 @@ def capture_current_params(
     use_adg, cfg_interval_start, cfg_interval_end, shift, infer_method, custom_timesteps, audio_format, lm_temperature,
     think_checkbox, lm_cfg_scale, lm_top_k, lm_top_p, lm_negative_prompt,
     lm_repetition_penalty,
+    lm_no_repeat_ngram_size,
     use_cot_metas, use_cot_caption, use_cot_language,
     constrained_decoding_debug, allow_lm_batch, auto_score, auto_lrc, score_scale, lm_batch_chunk_size,
-    track_name, complete_track_classes
+    track_name, complete_track_classes,
+    apg_norm_threshold=2.5, apg_momentum=-0.75, apg_eta=0.0,
 ):
     """Capture current UI parameters for next batch generation
     
@@ -1445,6 +1455,7 @@ def capture_current_params(
         "lm_top_p": lm_top_p,
         "lm_negative_prompt": lm_negative_prompt,
         "lm_repetition_penalty": lm_repetition_penalty,
+        "lm_no_repeat_ngram_size": lm_no_repeat_ngram_size,
         "use_cot_metas": use_cot_metas,
         "use_cot_caption": use_cot_caption,
         "use_cot_language": use_cot_language,
@@ -1456,6 +1467,9 @@ def capture_current_params(
         "lm_batch_chunk_size": lm_batch_chunk_size,
         "track_name": track_name,
         "complete_track_classes": complete_track_classes,
+        "apg_norm_threshold": apg_norm_threshold,
+        "apg_momentum": apg_momentum,
+        "apg_eta": apg_eta,
     }
 
 
@@ -1469,6 +1483,7 @@ def generate_with_batch_management(
     use_adg, cfg_interval_start, cfg_interval_end, shift, infer_method, custom_timesteps, audio_format, lm_temperature,
     think_checkbox, lm_cfg_scale, lm_top_k, lm_top_p, lm_negative_prompt,
     lm_repetition_penalty,
+    lm_no_repeat_ngram_size,
     use_cot_metas, use_cot_caption, use_cot_language, is_format_caption,
     constrained_decoding_debug,
     allow_lm_batch,
@@ -1483,6 +1498,9 @@ def generate_with_batch_management(
     total_batches,
     batch_queue,
     generation_params_state,
+    apg_norm_threshold=2.5,
+    apg_momentum=-0.75,
+    apg_eta=0.0,
     progress=gr.Progress(track_tqdm=True)
 ):
     """
@@ -1499,6 +1517,7 @@ def generate_with_batch_management(
         use_adg, cfg_interval_start, cfg_interval_end, shift, infer_method, custom_timesteps, audio_format, lm_temperature,
         think_checkbox, lm_cfg_scale, lm_top_k, lm_top_p, lm_negative_prompt,
         lm_repetition_penalty,
+        lm_no_repeat_ngram_size,
         use_cot_metas, use_cot_caption, use_cot_language, is_format_caption,
         constrained_decoding_debug,
         allow_lm_batch,
@@ -1506,6 +1525,9 @@ def generate_with_batch_management(
         auto_lrc,
         score_scale,
         lm_batch_chunk_size,
+        apg_norm_threshold,
+        apg_momentum,
+        apg_eta,
         progress
     )
     final_result_from_inner = None
@@ -1587,6 +1609,7 @@ def generate_with_batch_management(
         "lm_top_p": lm_top_p,
         "lm_negative_prompt": lm_negative_prompt,
         "lm_repetition_penalty": lm_repetition_penalty,
+        "lm_no_repeat_ngram_size": lm_no_repeat_ngram_size,
         "use_cot_metas": use_cot_metas,
         "use_cot_caption": use_cot_caption,
         "use_cot_language": use_cot_language,
@@ -1775,6 +1798,7 @@ def generate_next_batch_background(
         params.setdefault("lm_top_p", 0.9)
         params.setdefault("lm_negative_prompt", "NO USER INPUT")
         params.setdefault("lm_repetition_penalty", 1.0)
+        params.setdefault("lm_no_repeat_ngram_size", 0)
         params.setdefault("use_cot_metas", True)
         params.setdefault("use_cot_caption", True)
         params.setdefault("use_cot_language", True)
@@ -1786,6 +1810,9 @@ def generate_next_batch_background(
         params.setdefault("lm_batch_chunk_size", 8)
         params.setdefault("track_name", None)
         params.setdefault("complete_track_classes", [])
+        params.setdefault("apg_norm_threshold", 2.5)
+        params.setdefault("apg_momentum", -0.75)
+        params.setdefault("apg_eta", 0.0)
         
         # Call generate_with_progress with the saved parameters
         # Note: generate_with_progress is a generator, need to iterate through it
@@ -1828,6 +1855,7 @@ def generate_next_batch_background(
             lm_top_p=params.get("lm_top_p"),
             lm_negative_prompt=params.get("lm_negative_prompt"),
             lm_repetition_penalty=params.get("lm_repetition_penalty", 1.0),
+            lm_no_repeat_ngram_size=params.get("lm_no_repeat_ngram_size", 0),
             use_cot_metas=params.get("use_cot_metas"),
             use_cot_caption=params.get("use_cot_caption"),
             use_cot_language=params.get("use_cot_language"),
@@ -1838,6 +1866,9 @@ def generate_next_batch_background(
             auto_lrc=params.get("auto_lrc"),
             score_scale=params.get("score_scale"),
             lm_batch_chunk_size=params.get("lm_batch_chunk_size"),
+            apg_norm_threshold=params.get("apg_norm_threshold", 2.5),
+            apg_momentum=params.get("apg_momentum", -0.75),
+            apg_eta=params.get("apg_eta", 0.0),
             progress=progress
         )
         

@@ -14,6 +14,8 @@ import {
   getAudioStream,
   discoverEndpoints,
   checkSpaceHealth,
+  getBackendStatus,
+  swapLlmModel,
   cleanupJob,
   cancelJob,
   reinitializeServer,
@@ -970,6 +972,31 @@ router.get('/health', async (_req, res: Response) => {
     res.json({ healthy });
   } catch (error) {
     res.json({ healthy: false, error: (error as Error).message });
+  }
+});
+
+// Backend status — returns DiT + LLM model info from Gradio /v1/status
+router.get('/backend-status', async (_req, res: Response) => {
+  try {
+    const status = await getBackendStatus();
+    res.json(status);
+  } catch (error) {
+    res.status(502).json({ error: (error as Error).message });
+  }
+});
+
+// Swap LLM model — unloads current, loads new one
+router.post('/llm/swap', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { model, backend } = req.body || {};
+    if (!model) {
+      res.status(400).json({ error: 'Missing "model" field' });
+      return;
+    }
+    const result = await swapLlmModel(model, backend || 'pt');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
   }
 });
 

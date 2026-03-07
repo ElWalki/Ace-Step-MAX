@@ -125,6 +125,12 @@ export interface GenerationParams {
   sectionMeasures?: number;
   melodicVariation?: number;
   lmRepetitionPenalty?: number;
+  noRepeatNgramSize?: number;
+
+  // APG Melodic Variation (base model)
+  apgNormThreshold?: number;
+  apgMomentum?: number;
+  apgEta?: number;
 
   // LoRA state at generation time
   loraLoaded?: boolean;

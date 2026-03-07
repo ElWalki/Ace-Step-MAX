@@ -360,6 +360,17 @@ export const generateApi = {
   vramForceCleanup: (token: string): Promise<any> =>
     api('/api/generate/vram/force-cleanup', { method: 'POST', token }),
 
+  // Backend status — DiT + LLM model info
+  getBackendStatus: (): Promise<{
+    dit: { loaded: boolean; model: string | null; is_turbo: boolean };
+    llm: { loaded: boolean; model: string | null; backend: string | null };
+  }> => api('/api/generate/backend-status'),
+
+  // Swap LLM model at runtime
+  swapLlmModel: (model: string, backend: string, token: string): Promise<{
+    success: boolean; message: string; model: string | null; backend: string | null;
+  }> => api('/api/generate/llm/swap', { method: 'POST', body: { model, backend }, token }),
+
   getHistory: (token: string): Promise<{ jobs: GenerationJob[] }> =>
     api('/api/generate/history', { token }),
 
@@ -472,7 +483,7 @@ export const generateApi = {
     path: string;
   }> => api('/api/lora/open-folder', { method: 'POST', body: params, token }),
 
-  listLoras: (token: string): Promise<{
+  listLoras: (token: string, directories?: string[]): Promise<{
     loras: {
       name: string;
       source: 'library' | 'output';
@@ -481,7 +492,16 @@ export const generateApi = {
       metadata?: { trigger_tag?: string; tag_position?: string; description?: string; [key: string]: unknown };
       baseModel?: string;
     }[];
-  }> => api('/api/lora/list', { token }),
+    defaultDirectory: string;
+  }> => api('/api/lora/list', { method: 'POST', body: { directories }, token }),
+
+  validateLoraDir: (directory: string, token: string): Promise<{
+    valid: boolean;
+    exists: boolean;
+    loraCount: number;
+    directory: string;
+    error?: string;
+  }> => api('/api/lora/validate-dir', { method: 'POST', body: { directory }, token }),
 
   // List audio files from a folder (for random reference feature)
   listAudioFolder: (params: {

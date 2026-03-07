@@ -206,6 +206,19 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [sectionMeasures, setSectionMeasures] = useState(8); // bars per section block (4, 8, 16, 32)
   const [melodicVariation, setMelodicVariation] = useState(0.0); // 0 = default, 0.1-1.0 = experimental variation
 
+  // APG Melodic Controls (base model only — fine-grained pitch/melody shaping)
+  const [apgNormThreshold, setApgNormThreshold] = useState(2.5);
+  const [apgMomentum, setApgMomentum] = useState(-0.75);
+  const [apgEta, setApgEta] = useState(0.0);
+
+  // Note Change Speed (LM-level — blocks repeating audio code patterns)
+  const [noRepeatNgramSize, setNoRepeatNgramSize] = useState(0);
+
+  // Vocal Style Injection (caption-level — influences how the model sings)
+  const [vocalRange, setVocalRange] = useState(0);       // 0=default, 1=narrow, 2=moderate, 3=wide, 4=extreme
+  const [vocalStyle, setVocalStyle] = useState(0);        // 0=default, 1=legato, 2=melismatic, 3=staccato, 4=breathy, 5=powerful
+  const [noteSustain, setNoteSustain] = useState(0);      // 0=default, 1=short, 2=moderate, 3=long, 4=very long
+
   // Advanced Settings
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [duration, setDuration] = useState(-1);
@@ -230,6 +243,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     return localStorage.getItem('ace-lmModel') || 'acestep-5Hz-lm-0.6B';
   });
   const [shift, setShift] = useState(3.0);
+
+  // LLM status tracking (from backend)
+  const [llmStatus, setLlmStatus] = useState<{ loaded: boolean; model: string | null; backend: string | null } | null>(null);
+  const [llmSwapping, setLlmSwapping] = useState(false);
 
   // LM Parameters (under Expert)
   const [showLmParams, setShowLmParams] = useState(false);
@@ -528,6 +545,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       randomSeed?: boolean;
       melodicVariation?: number;
       lmRepetitionPenalty?: number;
+      noRepeatNgramSize?: number;
       useCotMetas?: boolean;
       useCotCaption?: boolean;
       useCotLanguage?: boolean;
@@ -737,6 +755,35 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     voicesApi.list(token).then(setVoicePresets).catch(err => console.error('Failed to load voice presets:', err));
   }, [token]);
 
+  // Fetch backend LLM status on mount and when lmModel changes
+  const fetchLlmStatus = useCallback(async () => {
+    try {
+      const status = await generateApi.getBackendStatus();
+      setLlmStatus(status.llm);
+    } catch {
+      // Backend not available
+    }
+  }, []);
+  useEffect(() => { void fetchLlmStatus(); }, [fetchLlmStatus]);
+
+  // Handler to swap LLM model
+  const handleLlmSwap = useCallback(async () => {
+    if (!token || llmSwapping) return;
+    setLlmSwapping(true);
+    try {
+      const result = await generateApi.swapLlmModel(lmModel, lmBackend, token);
+      if (result.success) {
+        setLlmStatus({ loaded: true, model: result.model, backend: result.backend });
+      } else {
+        alert(`LLM swap failed: ${result.message}`);
+      }
+    } catch (err) {
+      alert(`LLM swap error: ${(err as Error).message}`);
+    } finally {
+      setLlmSwapping(false);
+    }
+  }, [token, lmModel, lmBackend, llmSwapping]);
+
   const fetchVoicePresets = useCallback(async () => {
     if (!token) return;
     try {
@@ -942,6 +989,8 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       setSelectedLoraVariant(variant);
       const result = await generateApi.loadLora({ lora_path: path }, token);
       setLoraLoaded(true);
+      setLoraScale(1.0);  // Reset scale to 1.0 on new LoRA load
+      setLoraEnabled(true);  // Enable LoRA by default
       if (result?.trigger_tag) {
         setLoraTriggerTag(result.trigger_tag);
       } else {
@@ -973,6 +1022,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     try {
       const result = await generateApi.unloadLora(token);
       setLoraLoaded(false);
+      setLoraScale(1.0);
       setLoraTriggerTag('');
       setLoraTagPosition('prepend');
       console.log('LoRA unloaded:', result?.message);
@@ -1522,12 +1572,55 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   // Helper: trigger song generation with specific params (used by AI workflow + fallback)
+
+  // Build vocal style descriptors to inject into caption
+  const buildVocalDescriptors = (): string => {
+    const parts: string[] = [];
+
+    // Vocal Range
+    const rangeDesc: Record<number, string> = {
+      1: 'narrow vocal range, monotone',
+      2: 'moderate vocal range',
+      3: 'wide vocal range, soaring vocals, dynamic melody',
+      4: 'extreme vocal range, dramatic pitch changes, vocal acrobatics',
+    };
+    if (rangeDesc[vocalRange]) parts.push(rangeDesc[vocalRange]);
+
+    // Vocal Style
+    const styleDesc: Record<number, string> = {
+      1: 'legato vocals, smooth connected notes',
+      2: 'melismatic vocals, vocal runs, ornamental singing',
+      3: 'staccato vocals, rhythmic detached notes',
+      4: 'breathy vocals, intimate, airy tone',
+      5: 'powerful vocals, belting, strong projection',
+    };
+    if (styleDesc[vocalStyle]) parts.push(styleDesc[vocalStyle]);
+
+    // Note Sustain
+    const sustainDesc: Record<number, string> = {
+      1: 'short notes, quick phrasing, rapid delivery',
+      2: 'moderate sustain, balanced phrasing',
+      3: 'long sustained notes, drawn-out phrases, legato phrasing',
+      4: 'very long sustained notes, slow vocal delivery, extended phrases',
+    };
+    if (sustainDesc[noteSustain]) parts.push(sustainDesc[noteSustain]);
+
+    return parts.join(', ');
+  };
+
+  // Append vocal descriptors + gender to a style/caption string
+  const buildFullStyle = (baseStyle: string): string => {
+    const parts = [baseStyle.trim()];
+    const vocalDesc = buildVocalDescriptors();
+    if (vocalDesc) parts.push(vocalDesc);
+    if (vocalGender) {
+      parts.push(vocalGender === 'male' ? 'Male vocals' : 'Female vocals');
+    }
+    return parts.filter(Boolean).join(', ');
+  };
+
   const triggerGeneration = (lyricsToUse: string, captionToUse: string, lang: string, bpmVal: number, keyVal: string, tsVal: string, durVal: number) => {
-    const styleWithGender = (() => {
-      if (!vocalGender) return captionToUse;
-      const genderHint = vocalGender === 'male' ? 'Male vocals' : 'Female vocals';
-      return `${captionToUse}\n${genderHint}`;
-    })();
+    const styleWithGender = buildFullStyle(captionToUse);
 
     let jobSeed = -1;
     if (!randomSeed) jobSeed = seed;
@@ -1577,6 +1670,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     const effectiveInferMethod = (isVariationActive && weirdness > 60) ? 'sde' as const : inferMethod;
     // Core melodic variation: repetition penalty penalizes repeated audio codes in the LM
     const effectiveRepetitionPenalty = 1.0 + melodicVariation * 0.5; // 0% → 1.0 (off), 100% → 1.5 (strong)
+    // APG melodic variation: use direct slider values
 
     onGenerate({
       customMode: true,
@@ -1625,6 +1719,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       sectionMeasures,
       melodicVariation,
       lmRepetitionPenalty: effectiveRepetitionPenalty,
+      noRepeatNgramSize,
+      apgNormThreshold,
+      apgMomentum,
+      apgEta,
     });
   };
 
@@ -1991,12 +2089,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   };
 
   const handleGenerate = () => {
-    const styleWithGender = (() => {
-      if (!vocalGender) return style;
-      const genderHint = vocalGender === 'male' ? 'Male vocals' : 'Female vocals';
-      const trimmed = style.trim();
-      return trimmed ? `${trimmed}\n${genderHint}` : genderHint;
-    })();
+    const styleWithGender = buildFullStyle(style);
 
     // Bulk generation: loop bulkCount times
     for (let i = 0; i < bulkCount; i++) {
@@ -2142,12 +2235,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       return;
     }
 
-    const styleWithGender = (() => {
-      if (!vocalGender) return style;
-      const genderHint = vocalGender === 'male' ? 'Male vocals' : 'Female vocals';
-      const trimmed = style.trim();
-      return trimmed ? `${trimmed}\n${genderHint}` : genderHint;
-    })();
+    const styleWithGender = buildFullStyle(style);
 
     const lang = vocalLanguage;
     const bpmVal = bpm;
@@ -2204,6 +2292,10 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       sectionMeasures,
       melodicVariation,
       lmRepetitionPenalty: 1.0 + melodicVariation * 0.5, // 0% → 1.0 (off), 100% → 1.5 (strong)
+      noRepeatNgramSize,
+      apgNormThreshold,
+      apgMomentum,
+      apgEta,
       loraPath,
       loraScale,
       loraEnabled,
@@ -3962,13 +4054,206 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     max={1}
                     step={0.05}
                     value={melodicVariation}
-                    onChange={(e) => setMelodicVariation(parseFloat(e.target.value))}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setMelodicVariation(val);
+                      // Auto-update APG sliders when master slider changes
+                      setApgNormThreshold(2.5 + val * 7.5);
+                      setApgMomentum(-0.75 + val * 0.45);
+                      setApgEta(val * 0.5);
+                      // Auto-update note change speed: 0% → 0 (off), 50% → 3, 100% → 5
+                      setNoRepeatNgramSize(Math.round(val * 5));
+                    }}
                     className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-amber-500"
                   />
                   <p className="text-[9px] text-zinc-400 dark:text-zinc-500">Penalizes repeated audio codes in the LM for more diverse melodies. 0% = off (default), 50% = moderate, 100% = strong variation.</p>
                 </div>
+
+                {/* APG Fine-Tuning (base model only) */}
+                <div className="mt-2 pt-2 border-t border-amber-100 dark:border-amber-500/10 space-y-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold text-amber-600/70 dark:text-amber-400/60 uppercase tracking-wider">🎵 APG Pitch Controls</span>
+                    <span className="text-[8px] text-amber-500/40 dark:text-amber-500/30">(base model)</span>
+                  </div>
+
+                  {/* APG Norm Threshold */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Pitch Range</label>
+                      <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">{apgNormThreshold.toFixed(1)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={20}
+                      step={0.5}
+                      value={apgNormThreshold}
+                      onChange={(e) => setApgNormThreshold(parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-amber-500"
+                    />
+                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">How wide pitch jumps can be. Low (2.5) = constrained, High (10+) = allows big melodic leaps.</p>
+                  </div>
+
+                  {/* APG Momentum */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Melodic Smoothness</label>
+                      <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">{apgMomentum.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={-1}
+                      max={1}
+                      step={0.05}
+                      value={apgMomentum}
+                      onChange={(e) => setApgMomentum(parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-amber-500"
+                    />
+                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">Negative = jittery/oscillating, Near 0 = smooth contour, Positive = flowing melody. Default: -0.75</p>
+                  </div>
+
+                  {/* APG Eta */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Melody Amplification</label>
+                      <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">{apgEta.toFixed(2)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={apgEta}
+                      onChange={(e) => setApgEta(parseFloat(e.target.value))}
+                      className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-amber-500"
+                    />
+                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">Amplifies existing melodic patterns. 0 = off (default), 0.3-0.5 = stronger melodies, 1.0 = maximum.</p>
+                  </div>
+                </div>
+
+                {/* Note Change Speed (LM-level) */}
+                <div className="mt-2 pt-2 border-t border-emerald-100 dark:border-emerald-500/10 space-y-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold text-emerald-600/70 dark:text-emerald-400/60 uppercase tracking-wider">⚡ Note Change Speed</span>
+                    <span className="text-[8px] text-emerald-500/40 dark:text-emerald-500/30">(LM n-gram block)</span>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">No-Repeat N-gram</label>
+                      <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">{noRepeatNgramSize}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={8}
+                      step={1}
+                      value={noRepeatNgramSize}
+                      onChange={(e) => setNoRepeatNgramSize(parseInt(e.target.value))}
+                      className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-emerald-500"
+                    />
+                    <p className="text-[9px] text-zinc-400 dark:text-zinc-500">Blocks repeating N consecutive audio codes, forcing faster note changes. 0 = off, 3 = block 600ms patterns, 5+ = very fast changes. Higher values may reduce coherence.</p>
+                  </div>
+                </div>
               </div>
             </div>
+
+            {/* VOCAL STYLE CONTROLS — caption injection */}
+            {!instrumental && (
+            <div className="bg-white dark:bg-suno-card rounded-xl border border-purple-200 dark:border-purple-500/20 overflow-hidden">
+              <div className="px-3 py-2 bg-purple-50 dark:bg-purple-500/5 border-b border-purple-100 dark:border-purple-500/10 flex items-center gap-2">
+                <span className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-wider">🎤 Vocal Style</span>
+                <span className="text-[9px] text-purple-500/60 dark:text-purple-500/40">Injected in caption</span>
+              </div>
+              <div className="p-3 space-y-3">
+
+                {/* Vocal Range */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Vocal Range</label>
+                    <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">
+                      {['Default', 'Narrow', 'Moderate', 'Wide', 'Extreme'][vocalRange]}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    {['Off', 'Narrow', 'Mid', 'Wide', 'Max'].map((label, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setVocalRange(i)}
+                        className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold transition-all duration-150 border ${
+                          vocalRange === i
+                            ? 'bg-purple-500 text-white border-purple-500 shadow-sm'
+                            : 'bg-zinc-50 dark:bg-black/20 text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-white/10 hover:border-purple-300 dark:hover:border-purple-500/30'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-zinc-400 dark:text-zinc-500">How many different notes the model uses. Wide/Max = more melodic movement between pitches.</p>
+                </div>
+
+                {/* Vocal Style */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Singing Style</label>
+                    <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">
+                      {['Default', 'Legato', 'Melismatic', 'Staccato', 'Breathy', 'Powerful'][vocalStyle]}
+                    </span>
+                  </div>
+                  <div className="flex gap-1 flex-wrap">
+                    {[
+                      { label: 'Off', desc: '' },
+                      { label: 'Legato', desc: 'smooth' },
+                      { label: 'Melisma', desc: 'runs' },
+                      { label: 'Staccato', desc: 'punchy' },
+                      { label: 'Breathy', desc: 'airy' },
+                      { label: 'Power', desc: 'belt' },
+                    ].map((opt, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setVocalStyle(i)}
+                        className={`flex-1 min-w-[48px] py-1.5 rounded-lg text-[9px] font-bold transition-all duration-150 border ${
+                          vocalStyle === i
+                            ? 'bg-purple-500 text-white border-purple-500 shadow-sm'
+                            : 'bg-zinc-50 dark:bg-black/20 text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-white/10 hover:border-purple-300 dark:hover:border-purple-500/30'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-zinc-400 dark:text-zinc-500">How the model delivers the vocals. Melismatic = ornamental runs on syllables ("oh-oh-oh"), Legato = smooth flowing notes.</p>
+                </div>
+
+                {/* Note Sustain */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Note Length</label>
+                    <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500">
+                      {['Default', 'Short', 'Moderate', 'Long', 'Very Long'][noteSustain]}
+                    </span>
+                  </div>
+                  <div className="flex gap-1">
+                    {['Off', 'Short', 'Mid', 'Long', 'Max'].map((label, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setNoteSustain(i)}
+                        className={`flex-1 py-1.5 rounded-lg text-[9px] font-bold transition-all duration-150 border ${
+                          noteSustain === i
+                            ? 'bg-purple-500 text-white border-purple-500 shadow-sm'
+                            : 'bg-zinc-50 dark:bg-black/20 text-zinc-500 dark:text-zinc-400 border-zinc-200 dark:border-white/10 hover:border-purple-300 dark:hover:border-purple-500/30'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-zinc-400 dark:text-zinc-500">How long each note lasts. Long/Max = stretched syllables with more melodic phrasing.</p>
+                </div>
+
+              </div>
+            </div>
+            )}
 
             {/* Title Input */}
             <div className="bg-white dark:bg-suno-card rounded-xl border border-zinc-200 dark:border-white/5 overflow-hidden">
@@ -4297,7 +4582,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     label={t('loraScale')}
                     value={loraScale}
                     min={0}
-                    max={1}
+                    max={2}
                     step={0.05}
                     onChange={handleLoraScaleChange}
                     formatDisplay={(val) => val.toFixed(2)}
@@ -4503,15 +4788,49 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             {/* LM Model */}
             <div className="space-y-1.5">
               <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400">{t('lmModelLabel')}</label>
-              <select
-                value={lmModel}
-                onChange={(e) => { const v = e.target.value; setLmModel(v); localStorage.setItem('ace-lmModel', v); }}
-                className="w-full bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none"
-              >
-                <option value="acestep-5Hz-lm-0.6B">{t('lmModel06B')}</option>
-                <option value="acestep-5Hz-lm-1.7B">{t('lmModel17B')}</option>
-                <option value="acestep-5Hz-lm-4B">{t('lmModel4B')}</option>
-              </select>
+              <div className="flex gap-1.5">
+                <select
+                  value={lmModel}
+                  onChange={(e) => { const v = e.target.value; setLmModel(v); localStorage.setItem('ace-lmModel', v); }}
+                  className="flex-1 bg-zinc-50 dark:bg-black/20 border border-zinc-200 dark:border-white/10 rounded-lg px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none"
+                  disabled={llmSwapping}
+                >
+                  <option value="acestep-5Hz-lm-0.6B">{t('lmModel06B')}</option>
+                  <option value="acestep-5Hz-lm-1.7B">{t('lmModel17B')}</option>
+                  <option value="acestep-5Hz-lm-4B">{t('lmModel4B')}</option>
+                </select>
+                <button
+                  onClick={handleLlmSwap}
+                  disabled={llmSwapping || (llmStatus?.loaded && llmStatus?.model === lmModel)}
+                  title={llmSwapping ? 'Swapping...' : (llmStatus?.loaded && llmStatus?.model === lmModel) ? 'Already loaded' : 'Load this LLM model (unloads current)'}
+                  className={`px-2 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1 ${
+                    llmSwapping ? 'bg-yellow-500/20 border-yellow-500/30 text-yellow-500 cursor-wait' :
+                    (llmStatus?.loaded && llmStatus?.model === lmModel) ? 'bg-emerald-500/20 border-emerald-500/30 text-emerald-500 cursor-default' :
+                    'bg-pink-500/20 border-pink-500/30 text-pink-400 hover:bg-pink-500/30 cursor-pointer'
+                  }`}
+                >
+                  {llmSwapping ? <Loader2 size={12} className="animate-spin" /> :
+                   (llmStatus?.loaded && llmStatus?.model === lmModel) ? <Check size={12} /> :
+                   <RefreshCw size={12} />}
+                  {llmSwapping ? 'Loading...' : (llmStatus?.loaded && llmStatus?.model === lmModel) ? 'Loaded' : 'Load'}
+                </button>
+              </div>
+              {/* LLM Status Indicator */}
+              {llmStatus && (
+                <div className={`flex items-center gap-1.5 text-[10px] ${llmStatus.loaded ? 'text-emerald-500' : 'text-zinc-500'}`}>
+                  <div className={`w-1.5 h-1.5 rounded-full ${llmStatus.loaded ? 'bg-emerald-500' : 'bg-zinc-400'}`} />
+                  {llmStatus.loaded
+                    ? `Active: ${llmStatus.model || 'unknown'} (${llmStatus.backend || 'pt'})`
+                    : 'No LLM loaded'}
+                </div>
+              )}
+              {/* Warning when thinking is disabled */}
+              {!thinking && !enhance && (
+                <div className="flex items-center gap-1 text-[10px] text-amber-500">
+                  <AlertTriangle size={10} />
+                  <span>Think & Enhance are off — LLM is skipped during generation</span>
+                </div>
+              )}
               <p className="text-[10px] text-zinc-500">{t('lmModelHint')}</p>
             </div>
 

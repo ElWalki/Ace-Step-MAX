@@ -169,10 +169,23 @@ async function prepareAudioFile(audioUrl: string | undefined): Promise<unknown> 
  */
 async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
   const caption = params.style || 'pop music';
-  const prompt = params.customMode ? caption : (params.songDescription || caption);
+  let prompt = params.customMode ? caption : (params.songDescription || caption);
   const lyrics = params.instrumental ? '' : (params.lyrics || '');
   const isThinking = params.thinking ?? false;
   const isEnhance = params.enhance ?? false;
+
+  // Inject LoRA trigger tag into the prompt if configured
+  if (params.loraTriggerTag && params.loraTagPosition && params.loraTagPosition !== 'off') {
+    const tag = params.loraTriggerTag.trim();
+    if (tag) {
+      if (params.loraTagPosition === 'prepend') {
+        prompt = `${tag}, ${prompt}`;
+      } else if (params.loraTagPosition === 'append') {
+        prompt = `${prompt}, ${tag}`;
+      }
+      console.log(`[LoRA] Trigger tag injected (${params.loraTagPosition}): "${tag}"`);
+    }
+  }
 
   // Measure alignment: snap duration to complete musical measures
   let duration = params.duration && params.duration > 0 ? params.duration : -1;
@@ -229,24 +242,28 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
     params.lmTopK ?? 0,                                           // 30: LM Top-K
     params.lmTopP ?? 0.9,                                         // 31: LM Top-P
     params.lmNegativePrompt || 'NO USER INPUT',                   // 32: LM Negative Prompt
-    params.lmRepetitionPenalty ?? 1.0,                            // 33: LM Repetition Penalty (1.0 = off, >1.0 = more melodic variation)
-    useCot ? (params.useCotMetas ?? true) : false,                // 34: CoT Metas
-    useCot ? (params.useCotCaption ?? true) : false,              // 35: CaptionRewrite
-    useCot ? (params.useCotLanguage ?? true) : false,             // 36: CoT Language
-    params.isFormatCaption ?? false,                              // 37: Is Format Caption State
-    params.constrainedDecodingDebug ?? false,                     // 38: Constrained Decoding Debug
-    params.allowLmBatch ?? true,                                  // 39: ParallelThinking
-    params.getScores ?? false,                                    // 40: Auto Score
-    params.getLrc ?? false,                                       // 41: Auto LRC
-    params.scoreScale ?? 0.5,                                     // 42: Quality Score Sensitivity
-    params.lmBatchChunkSize ?? 8,                                 // 43: LM Batch Chunk Size
-    params.trackName || null,                                     // 44: Track Name
-    params.completeTrackClasses || [],                            // 45: Track Names
-    params.autogen ?? false,                                      // 46: AutoGen
+    params.lmRepetitionPenalty ?? 1.2,                            // 33: LM Repetition Penalty (1.0 = off, >1.0 = more melodic variation)
+    params.noRepeatNgramSize ?? 0,                                // 34: No-Repeat N-gram Size (0 = off, 3 = block 600ms patterns = faster note changes)
+    useCot ? (params.useCotMetas ?? true) : false,                // 35: CoT Metas
+    useCot ? (params.useCotCaption ?? true) : false,              // 36: CaptionRewrite
+    useCot ? (params.useCotLanguage ?? true) : false,             // 37: CoT Language
+    params.isFormatCaption ?? false,                              // 38: Is Format Caption State
+    params.constrainedDecodingDebug ?? false,                     // 39: Constrained Decoding Debug
+    params.allowLmBatch ?? true,                                  // 40: ParallelThinking
+    params.getScores ?? false,                                    // 41: Auto Score
+    params.getLrc ?? false,                                       // 42: Auto LRC
+    params.scoreScale ?? 0.5,                                     // 43: Quality Score Sensitivity
+    params.lmBatchChunkSize ?? 8,                                 // 44: LM Batch Chunk Size
+    params.trackName || null,                                     // 45: Track Name
+    params.completeTrackClasses || [],                            // 46: Track Names
+    params.autogen ?? false,                                      // 47: AutoGen
     0,                                                            // 47: Current Batch Index
     1,                                                            // 48: Total Batches
     [],                                                           // 49: Batch Queue
     {},                                                           // 50: Generation Params State
+    params.apgNormThreshold ?? 2.5,                                // 51: APG Norm Threshold
+    params.apgMomentum ?? -0.75,                                   // 52: APG Momentum
+    params.apgEta ?? 0.0,                                          // 53: APG Eta
   ];
 }
 
@@ -366,6 +383,21 @@ export interface GenerationParams {
   sectionMeasures?: number;
   melodicVariation?: number;
   lmRepetitionPenalty?: number;
+  noRepeatNgramSize?: number;
+
+  // APG Melodic Variation (base model)
+  apgNormThreshold?: number;
+  apgMomentum?: number;
+  apgEta?: number;
+
+  // LoRA
+  loraLoaded?: boolean;
+  loraPath?: string;
+  loraName?: string;
+  loraScale?: number;
+  loraEnabled?: boolean;
+  loraTriggerTag?: string;
+  loraTagPosition?: string;
 
   // Model selection
   ditModel?: string;
@@ -418,6 +450,38 @@ let isProcessingQueue = false;
 // Health check - verify Gradio app is reachable
 export async function checkSpaceHealth(): Promise<boolean> {
   return isGradioAvailable();
+}
+
+// Backend status — returns DiT + LLM model info from Gradio /v1/status
+export interface BackendStatus {
+  dit: { loaded: boolean; model: string | null; is_turbo: boolean };
+  llm: { loaded: boolean; model: string | null; backend: string | null };
+}
+export async function getBackendStatus(): Promise<BackendStatus> {
+  const resp = await fetch(`${ACESTEP_API}/v1/status`);
+  if (!resp.ok) throw new Error(`Backend status failed: ${resp.status}`);
+  const json = await resp.json();
+  // Unwrap { code, data } envelope used by api_routes.py
+  const data = json.data ?? json;
+  return data as BackendStatus;
+}
+
+// Swap LLM model — unloads current, loads new one (blocking ~30-90s)
+export interface LlmSwapResult {
+  success: boolean;
+  message: string;
+  model: string | null;
+  backend: string | null;
+}
+export async function swapLlmModel(modelName: string, backend: string = 'pt'): Promise<LlmSwapResult> {
+  const resp = await fetch(`${ACESTEP_API}/v1/llm/swap`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: modelName, backend }),
+  });
+  const json = await resp.json();
+  const data = json.data ?? json;
+  return data as LlmSwapResult;
 }
 
 // Discover endpoints (for compatibility)

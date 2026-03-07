@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactDOM from 'react-dom';
-import { Search, Star, ChevronDown, FolderOpen, Loader2, X, GripVertical, Check, RefreshCw } from 'lucide-react';
+import { Search, Star, ChevronDown, FolderOpen, Loader2, X, GripVertical, Check, RefreshCw, FolderPlus, Trash2, Settings } from 'lucide-react';
 import { generateApi } from '../services/api';
 import { EditableSlider } from './EditableSlider';
 
@@ -56,6 +56,7 @@ function getModelType(baseModel?: string): { label: string; color: string } {
 }
 
 const FAVORITES_KEY = 'ace-lora-favorites';
+const DIRECTORIES_KEY = 'ace-lora-directories';
 
 function loadFavorites(): Set<string> {
   try {
@@ -66,6 +67,17 @@ function loadFavorites(): Set<string> {
 
 function saveFavorites(favs: Set<string>) {
   localStorage.setItem(FAVORITES_KEY, JSON.stringify([...favs]));
+}
+
+function loadDirectories(): string[] {
+  try {
+    const stored = localStorage.getItem(DIRECTORIES_KEY);
+    return stored ? (JSON.parse(stored) as string[]) : [];
+  } catch { return []; }
+}
+
+function saveDirectories(dirs: string[]) {
+  localStorage.setItem(DIRECTORIES_KEY, JSON.stringify(dirs));
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -97,6 +109,14 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
   const [favorites, setFavorites] = useState<Set<string>>(() => loadFavorites());
   const [expandedLora, setExpandedLora] = useState<string | null>(null);
 
+  // Directory management
+  const [loraDirectories, setLoraDirectories] = useState<string[]>(() => loadDirectories());
+  const [defaultDirectory, setDefaultDirectory] = useState<string>('');
+  const [newDirInput, setNewDirInput] = useState('');
+  const [dirManagerOpen, setDirManagerOpen] = useState(false);
+  const [dirValidating, setDirValidating] = useState(false);
+  const [dirError, setDirError] = useState<string | null>(null);
+
   // Context menu
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; lora: LoraEntry; variant?: LoraVariant } | null>(null);
 
@@ -124,14 +144,60 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
     if (!token) return;
     setListLoading(true);
     try {
-      const result = await generateApi.listLoras(token);
+      const result = await generateApi.listLoras(token, loraDirectories.length > 0 ? loraDirectories : undefined);
       setLoraList(result.loras || []);
+      if (result.defaultDirectory) {
+        setDefaultDirectory(result.defaultDirectory);
+      }
     } catch (err) {
       console.error('[LoraManager] Failed to fetch list:', err);
     } finally {
       setListLoading(false);
     }
-  }, [token]);
+  }, [token, loraDirectories]);
+
+  // ─── Directory management handlers ──────────────────────────────────────
+  const handleAddDirectory = useCallback(async () => {
+    if (!newDirInput.trim()) return;
+    const dir = newDirInput.trim();
+    
+    // Check if already added
+    if (loraDirectories.includes(dir)) {
+      setDirError('Directory already added');
+      return;
+    }
+    
+    setDirValidating(true);
+    setDirError(null);
+    try {
+      const result = await generateApi.validateLoraDir(dir, token);
+      if (!result.valid) {
+        setDirError(result.error || 'Invalid directory');
+        return;
+      }
+      const newDirs = [...loraDirectories, dir];
+      setLoraDirectories(newDirs);
+      saveDirectories(newDirs);
+      setNewDirInput('');
+    } catch (err) {
+      setDirError(err instanceof Error ? err.message : 'Validation failed');
+    } finally {
+      setDirValidating(false);
+    }
+  }, [newDirInput, loraDirectories, token]);
+
+  const handleRemoveDirectory = useCallback((dir: string) => {
+    const newDirs = loraDirectories.filter(d => d !== dir);
+    setLoraDirectories(newDirs);
+    saveDirectories(newDirs);
+  }, [loraDirectories]);
+
+  // Refetch when directories change
+  useEffect(() => {
+    if (visible && token) {
+      fetchList();
+    }
+  }, [loraDirectories]);
 
   useEffect(() => {
     if (visible && loraList.length === 0) fetchList();
@@ -282,6 +348,17 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
           </div>
           <div className="flex items-center gap-1">
             <button
+              onClick={() => setDirManagerOpen(!dirManagerOpen)}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                dirManagerOpen
+                  ? 'text-purple-500 bg-purple-50 dark:bg-purple-900/20'
+                  : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+              title="Manage LoRA directories"
+            >
+              <Settings size={14} />
+            </button>
+            <button
               onClick={fetchList}
               disabled={listLoading}
               className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
@@ -298,6 +375,69 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Directory Manager Panel */}
+        {dirManagerOpen && (
+          <div className="px-4 py-3 bg-purple-50/50 dark:bg-purple-900/10 border-b border-zinc-200 dark:border-zinc-700 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold text-purple-700 dark:text-purple-400 uppercase tracking-wider">LoRA Directories</span>
+              <span className="text-[9px] text-zinc-500 dark:text-zinc-400">{loraDirectories.length + 1} folder{loraDirectories.length !== 0 ? 's' : ''}</span>
+            </div>
+            
+            {/* Default directory - always shown */}
+            {defaultDirectory && (
+              <div className="flex items-center gap-2 px-2 py-1.5 bg-zinc-100 dark:bg-zinc-800/50 rounded-lg">
+                <FolderOpen size={12} className="text-zinc-400 shrink-0" />
+                <span className="text-[10px] text-zinc-600 dark:text-zinc-300 truncate flex-1" title={defaultDirectory}>
+                  {defaultDirectory.split(/[\\/]/).slice(-2).join('/')}
+                </span>
+                <span className="text-[8px] px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-500 dark:text-zinc-400 font-medium">default</span>
+              </div>
+            )}
+            
+            {/* Custom directories */}
+            {loraDirectories.map((dir, idx) => (
+              <div key={idx} className="flex items-center gap-2 px-2 py-1.5 bg-white dark:bg-zinc-800/80 rounded-lg border border-zinc-200 dark:border-zinc-700">
+                <FolderOpen size={12} className="text-purple-400 shrink-0" />
+                <span className="text-[10px] text-zinc-600 dark:text-zinc-300 truncate flex-1" title={dir}>
+                  {dir.split(/[\\/]/).slice(-2).join('/')}
+                </span>
+                <button
+                  onClick={() => handleRemoveDirectory(dir)}
+                  className="w-5 h-5 flex items-center justify-center rounded text-zinc-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  title="Remove directory"
+                >
+                  <Trash2 size={10} />
+                </button>
+              </div>
+            ))}
+            
+            {/* Add new directory */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newDirInput}
+                onChange={(e) => { setNewDirInput(e.target.value); setDirError(null); }}
+                onKeyDown={(e) => e.key === 'Enter' && handleAddDirectory()}
+                placeholder="D:\\path\\to\\lora\\folder"
+                className="flex-1 min-w-0 bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-[10px] text-zinc-900 dark:text-white placeholder-zinc-400 dark:placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-purple-500/30"
+              />
+              <button
+                onClick={handleAddDirectory}
+                disabled={dirValidating || !newDirInput.trim()}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-purple-500 hover:bg-purple-600 text-white text-[10px] font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {dirValidating ? <Loader2 size={10} className="animate-spin" /> : <FolderPlus size={10} />}
+                Add
+              </button>
+            </div>
+            
+            {/* Error message */}
+            {dirError && (
+              <p className="text-[9px] text-red-500 dark:text-red-400">{dirError}</p>
+            )}
+          </div>
+        )}
 
         {/* Active LoRA controls */}
         {loraLoaded && (
@@ -337,7 +477,7 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
               <input
                 type="range"
                 min={0}
-                max={1}
+                max={2}
                 step={0.05}
                 value={loraScale}
                 onChange={(e) => onSetScale(parseFloat(e.target.value))}
@@ -573,7 +713,7 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
               <input
                 type="range"
                 min={0}
-                max={1}
+                max={2}
                 step={0.05}
                 value={pendingActivation.scale}
                 onChange={(e) => setPendingActivation(prev => prev ? { ...prev, scale: parseFloat(e.target.value) } : null)}
@@ -581,8 +721,8 @@ export const LoraManager: React.FC<LoraManagerProps> = ({
               />
               <div className="flex justify-between text-[8px] text-zinc-400">
                 <span>0.00</span>
-                <span>0.50</span>
                 <span>1.00</span>
+                <span>2.00</span>
               </div>
             </div>
 

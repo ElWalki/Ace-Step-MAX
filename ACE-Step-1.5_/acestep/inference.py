@@ -118,6 +118,12 @@ class GenerationParams:
     # If provided, overrides inference_steps and shift
     timesteps: Optional[List[float]] = None
 
+    # APG (Autoperceptual Guidance) parameters for melodic variation control (base model only)
+    # These parameters control how the diffusion guidance shapes the melodic contour.
+    apg_norm_threshold: float = 2.5   # L2 norm clipping of guidance signal. Lower = suppresses large pitch jumps. 0 = disabled. Try 5.0-15.0 for wider vocal range.
+    apg_momentum: float = -0.75       # Momentum buffer for guidance. Negative = oscillating correction. Try -0.3 for smoother melodic arcs, 0.15 for sustained phrases.
+    apg_eta: float = 0.0              # Parallel component weight. 0 = orthogonal only (conservative). Try 0.3-0.5 to amplify existing melodic patterns.
+
     repainting_start: float = 0.0
     repainting_end: float = -1
     audio_cover_strength: float = 1.0
@@ -129,7 +135,8 @@ class GenerationParams:
     lm_top_k: int = 0
     lm_top_p: float = 0.9
     lm_negative_prompt: str = "NO USER INPUT"
-    lm_repetition_penalty: float = 1.0  # Repetition penalty for audio codes (1.0 = no penalty, >1.0 = penalize repeated codes = more melodic variation)
+    lm_repetition_penalty: float = 1.2  # Repetition penalty for audio codes (1.0 = no penalty, >1.0 = penalize repeated codes = more melodic variation)
+    lm_no_repeat_ngram_size: int = 0  # No-repeat N-gram size for audio codes (0 = disabled, 3 = block repeating 3-code patterns ~600ms = faster note changes)
     use_cot_metas: bool = True
     use_cot_caption: bool = True
     use_cot_lyrics: bool = False  # TODO: not used yet
@@ -512,6 +519,7 @@ def generate_music(
                     top_k=top_k_value,
                     top_p=top_p_value,
                     repetition_penalty=params.lm_repetition_penalty,
+                    no_repeat_ngram_size=params.lm_no_repeat_ngram_size,
                     target_duration=audio_duration,  # Pass duration to limit audio codes generation
                     user_metadata=user_metadata_to_pass,
                     use_cot_caption=params.use_cot_caption,
@@ -641,6 +649,9 @@ def generate_music(
             shift=params.shift,
             infer_method=params.infer_method,
             timesteps=params.timesteps,
+            apg_norm_threshold=params.apg_norm_threshold,
+            apg_momentum=params.apg_momentum,
+            apg_eta=params.apg_eta,
             progress=progress,
         )
 

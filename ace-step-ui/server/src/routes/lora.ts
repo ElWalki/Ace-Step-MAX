@@ -94,12 +94,12 @@ router.post('/unload', authMiddleware, async (_req: AuthenticatedRequest, res: R
   }
 });
 
-// POST /api/lora/scale — Set LoRA scale (0.0 - 5.0)
+// POST /api/lora/scale — Set LoRA scale (0.0 - 2.0)
 router.post('/scale', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { scale } = req.body;
-    if (typeof scale !== 'number' || scale < 0 || scale > 5) {
-      res.status(400).json({ error: 'scale must be a number between 0 and 5' });
+    if (typeof scale !== 'number' || scale < 0 || scale > 2) {
+      res.status(400).json({ error: 'scale must be a number between 0 and 2' });
       return;
     }
 
@@ -168,9 +168,10 @@ router.post('/tag-position', authMiddleware, async (req: AuthenticatedRequest, r
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// GET /api/lora/list — Scan lora_library/ and lora_output*/ to build a
+// POST /api/lora/list — Scan lora_library/ and lora_output*/ to build a
 //   structured list of available LoRAs with their checkpoints.
-//   Returns: LoraEntry[]
+//   Body: { directories?: string[] } — optional custom directories to scan
+//   Returns: { loras: LoraEntry[], defaultDirectory: string }
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface LoraVariant {
@@ -211,7 +212,9 @@ function isAdapterDir(dir: string): boolean {
 
 /**
  * Scan a lora_library/-style directory.
- * Each child folder that contains adapter_config.json is a LoRA with one "final" variant.
+ * Handles BOTH:
+ *   1) Simple adapters: child folder directly contains adapter_config.json
+ *   2) Training outputs: child folder contains final/ or checkpoints/ subdirectories
  */
 function scanLibrary(libraryDir: string): LoraEntry[] {
   if (!fs.existsSync(libraryDir)) return [];
@@ -219,19 +222,34 @@ function scanLibrary(libraryDir: string): LoraEntry[] {
   for (const name of fs.readdirSync(libraryDir)) {
     const full = path.join(libraryDir, name);
     if (!fs.statSync(full).isDirectory()) continue;
-    if (!isAdapterDir(full)) continue;  // skip folders without adapter
-
-    const metadata = readJsonSafe(path.join(full, 'lora_metadata.json'));
-    const adapterCfg = readJsonSafe(path.join(full, 'adapter_config.json'));
-
-    entries.push({
-      name,
-      source: 'library',
-      sourceDir: path.basename(libraryDir),
-      variants: [{ label: 'final', path: full }],
-      metadata: metadata ?? undefined,
-      baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
-    });
+    
+    // Case 1: Simple adapter (adapter_config.json at root)
+    if (isAdapterDir(full)) {
+      const metadata = readJsonSafe(path.join(full, 'lora_metadata.json'));
+      const adapterCfg = readJsonSafe(path.join(full, 'adapter_config.json'));
+      entries.push({
+        name,
+        source: 'library',
+        sourceDir: path.basename(libraryDir),
+        variants: [{ label: 'final', path: full }],
+        metadata: metadata ?? undefined,
+        baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
+      });
+      continue;
+    }
+    
+    // Case 2: Training output structure (has final/, checkpoints/, etc.)
+    const hasFinal = fs.existsSync(path.join(full, 'final')) || fs.existsSync(path.join(full, 'final_lora'));
+    const hasCheckpoints = fs.existsSync(path.join(full, 'checkpoints'));
+    if (hasFinal || hasCheckpoints) {
+      // Use scanOutputDir but override source to 'library'
+      const outputEntries = scanOutputDir(full, name);
+      for (const entry of outputEntries) {
+        entry.source = 'library';
+        entry.sourceDir = path.basename(libraryDir);
+      }
+      entries.push(...outputEntries);
+    }
   }
   return entries;
 }
@@ -335,14 +353,19 @@ function scanOutputDir(outputDir: string, sourceDir?: string): LoraEntry[] {
   return entries;
 }
 
-router.get('/list', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+router.post('/list', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const ACESTEP_DIR = resolveAcestepDir();
     const allEntries: LoraEntry[] = [];
 
-    // 1) Scan lora_library/
-    const libraryDir = path.join(ACESTEP_DIR, 'lora_library');
-    allEntries.push(...scanLibrary(libraryDir));
+    // Custom directories from request body (array of absolute paths)
+    const customDirs: string[] = Array.isArray(req.body?.directories) ? req.body.directories : [];
+
+    // Default library directory
+    const defaultLibraryDir = path.join(ACESTEP_DIR, 'lora_library');
+
+    // 1) Scan the default lora_library/
+    allEntries.push(...scanLibrary(defaultLibraryDir));
 
     // 2) Scan all lora_output*/ directories at root level
     if (fs.existsSync(ACESTEP_DIR)) {
@@ -354,10 +377,68 @@ router.get('/list', authMiddleware, async (_req: AuthenticatedRequest, res: Resp
       }
     }
 
-    res.json({ loras: allEntries });
+    // 3) Scan custom directories (absolute paths from user)
+    for (const customDir of customDirs) {
+      if (!customDir || typeof customDir !== 'string') continue;
+      // Skip if it's the same as default library (avoid duplicates)
+      if (path.resolve(customDir) === path.resolve(defaultLibraryDir)) continue;
+      if (!fs.existsSync(customDir)) continue;
+      if (!fs.statSync(customDir).isDirectory()) continue;
+      
+      // Case 1: The directory IS itself an adapter (has adapter_config.json)
+      if (isAdapterDir(customDir)) {
+        const dirName = path.basename(customDir);
+        const parentDir = path.basename(path.dirname(customDir));
+        const metadata = readJsonSafe(path.join(customDir, 'lora_metadata.json'));
+        const adapterCfg = readJsonSafe(path.join(customDir, 'adapter_config.json'));
+        allEntries.push({
+          name: parentDir === 'adapter' ? path.basename(path.dirname(path.dirname(customDir))) || dirName : `${parentDir}/${dirName}`,
+          source: 'library',
+          sourceDir: path.basename(path.dirname(customDir)),
+          variants: [{ label: 'final', path: customDir }],
+          metadata: metadata ?? undefined,
+          baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
+        });
+      } else {
+        // Case 2: Directory CONTAINS LoRA folders - scan as library-style
+        const customEntries = scanLibrary(customDir);
+        allEntries.push(...customEntries);
+      }
+      allEntries.push(...customEntries);
+    }
+
+    res.json({ loras: allEntries, defaultDirectory: defaultLibraryDir });
   } catch (error) {
     console.error('[LoRA] List error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list LoRAs' });
+  }
+});
+
+// POST /api/lora/validate-dir — Check if a directory exists and is valid for LoRA scanning
+router.post('/validate-dir', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { directory } = req.body;
+    if (!directory || typeof directory !== 'string') {
+      res.status(400).json({ valid: false, error: 'directory is required' });
+      return;
+    }
+    const exists = fs.existsSync(directory);
+    const isDir = exists && fs.statSync(directory).isDirectory();
+    
+    // Check if directory IS an adapter or CONTAINS adapters
+    const isDirectAdapter = isDir && isAdapterDir(directory);
+    const containsAdapters = isDir ? scanLibrary(directory).length : 0;
+    const loraCount = isDirectAdapter ? 1 : containsAdapters;
+    
+    res.json({ 
+      valid: isDir && (isDirectAdapter || containsAdapters > 0), 
+      exists, 
+      loraCount, 
+      directory,
+      isDirectAdapter,
+    });
+  } catch (error) {
+    res.status(500).json({ valid: false, error: error instanceof Error ? error.message : 'Validation failed' });
   }
 });
 

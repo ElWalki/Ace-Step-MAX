@@ -289,6 +289,7 @@ class AceStepHandler:
             
             self.lora_loaded = True
             self.use_lora = True  # Enable LoRA by default after loading
+            self.lora_scale = 1.0  # Reset scale to 1.0 on fresh load
             
             # Store current LoRA metadata for reference
             self._current_lora_path = lora_path
@@ -404,10 +405,16 @@ class AceStepHandler:
         return f"✅ LoRA {status}"
     
     def set_lora_scale(self, scale: float) -> str:
-        """Set LoRA adapter scale/weight (0-1 range).
+        """Set LoRA adapter scale/weight (0-2 range).
+        
+        Uses PEFT's set_scaling() when available, otherwise directly modifies
+        the internal `scaling` dict on each LoRA layer.
+        
+        When scale=0 the LoRA effect is disabled entirely (via disable_adapter_layers).
+        When scale>0 the adapter is re-enabled and the scaling is applied.
         
         Args:
-            scale: LoRA influence scale (0=disabled, 1=full effect)
+            scale: LoRA influence scale (0=disabled, 1=full trained effect, 2=double)
             
         Returns:
             Status message
@@ -415,29 +422,52 @@ class AceStepHandler:
         if not self.lora_loaded:
             return "⚠️ No LoRA loaded"
         
-        # Clamp scale to 0-1 range
-        self.lora_scale = max(0.0, min(1.0, scale))
+        # Clamp scale to 0-2 range
+        self.lora_scale = max(0.0, min(2.0, scale))
         
-        # Iterate through all LoRA layers and set their scaling
+        # If scale is 0, just disable adapter layers entirely (cleanest way)
+        if self.lora_scale == 0.0:
+            if hasattr(self.model.decoder, 'disable_adapter_layers'):
+                try:
+                    self.model.decoder.disable_adapter_layers()
+                except Exception:
+                    pass
+            self.use_lora = False
+            logger.info("LoRA scale set to 0 — adapter layers disabled")
+            return "✅ LoRA scale: 0.00 (disabled)"
+        
+        # Re-enable adapter layers if they were disabled
+        if hasattr(self.model.decoder, 'enable_adapter_layers'):
+            try:
+                self.model.decoder.enable_adapter_layers()
+                self.use_lora = True
+            except Exception:
+                pass
+        
+        # Apply scaling to all LoRA layers
         try:
+            modified_count = 0
             for name, module in self.model.decoder.named_modules():
                 if hasattr(module, 'scaling'):
                     scaling = module.scaling
-                    # Handle dict-style scaling (adapter_name -> value)
+                    # Handle dict-style scaling (adapter_name -> value) — standard in PEFT
                     if isinstance(scaling, dict):
-                        # Save original scaling on first call
+                        # Save original PEFT scaling (alpha/r) on first call for this module
                         if not hasattr(module, '_original_scaling'):
                             module._original_scaling = {k: v for k, v in scaling.items()}
-                        # Apply new scale
+                        # Apply user scale as a multiplier on top of original alpha/r
                         for adapter_name in scaling:
-                            module.scaling[adapter_name] = module._original_scaling[adapter_name] * self.lora_scale
-                    # Handle float-style scaling (single value)
+                            original = module._original_scaling.get(adapter_name, scaling[adapter_name])
+                            module.scaling[adapter_name] = original * self.lora_scale
+                        modified_count += 1
+                    # Handle float-style scaling (older PEFT versions)
                     elif isinstance(scaling, (int, float)):
                         if not hasattr(module, '_original_scaling'):
                             module._original_scaling = scaling
                         module.scaling = module._original_scaling * self.lora_scale
+                        modified_count += 1
             
-            logger.info(f"LoRA scale set to {self.lora_scale:.2f}")
+            logger.info(f"LoRA scale set to {self.lora_scale:.2f} ({modified_count} layers)")
             return f"✅ LoRA scale: {self.lora_scale:.2f}"
         except Exception as e:
             logger.warning(f"Could not set LoRA scale: {e}")
@@ -2297,6 +2327,9 @@ class AceStepHandler:
         audio_code_hints: Optional[Union[str, List[str]]] = None,
         infer_method: str = "ode",
         timesteps: Optional[List[float]] = None,
+        apg_norm_threshold: float = 2.5,
+        apg_momentum: float = -0.75,
+        apg_eta: float = 0.0,
     ) -> Dict[str, Any]:
 
         """
@@ -2335,10 +2368,9 @@ class AceStepHandler:
             - seed_num: Seed used
         """
         if self.config.is_turbo:
-            # Limit inference steps to maximum 8
+            # Turbo models are optimized for 8 steps, but allow experimentation with higher values
             if infer_steps > 8:
-                logger.warning(f"[service_generate] dmd_gan version: infer_steps {infer_steps} exceeds maximum 8, clamping to 8")
-                infer_steps = 8
+                logger.info(f"[service_generate] Turbo model: using {infer_steps} steps (optimized for 8, but higher values may improve quality)")
             # CFG parameters are not adjustable for dmd_gan (they will be ignored)
             # Note: guidance_scale, cfg_interval_start, cfg_interval_end are still passed but may be ignored by the model
         
@@ -2462,6 +2494,9 @@ class AceStepHandler:
             "cfg_interval_start": cfg_interval_start,
             "cfg_interval_end": cfg_interval_end,
             "shift": shift,
+            "apg_norm_threshold": apg_norm_threshold,
+            "apg_momentum": apg_momentum,
+            "apg_eta": apg_eta,
         }
         # Add custom timesteps if provided (convert to tensor)
         if timesteps is not None:
@@ -2871,6 +2906,9 @@ class AceStepHandler:
         infer_method: str = "ode",
         use_tiled_decode: bool = True,
         timesteps: Optional[List[float]] = None,
+        apg_norm_threshold: float = 2.5,
+        apg_momentum: float = -0.75,
+        apg_eta: float = 0.0,
         progress=None
     ) -> Dict[str, Any]:
         """
@@ -3022,6 +3060,9 @@ class AceStepHandler:
                 audio_code_hints=audio_code_hints_batch,  # Pass audio code hints as list
                 return_intermediate=should_return_intermediate,
                 timesteps=timesteps,  # Pass custom timesteps if provided
+                apg_norm_threshold=apg_norm_threshold,  # APG norm threshold for melodic variation
+                apg_momentum=apg_momentum,  # APG momentum for melodic arcs
+                apg_eta=apg_eta,  # APG parallel component weight
             )
             
             logger.info("[generate_music] Model generation completed. Decoding latents...")

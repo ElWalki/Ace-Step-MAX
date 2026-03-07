@@ -204,11 +204,11 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                 )
                 lora_scale_slider = gr.Slider(
                     minimum=0.0,
-                    maximum=1.0,
+                    maximum=2.0,
                     value=1.0,
                     step=0.05,
                     label="LoRA Scale",
-                    info="LoRA influence strength (0=disabled, 1=full)",
+                    info="LoRA influence strength (0=disabled, 1=full, 2=double)",
                     scale=2,
                 )
                 lora_status = gr.Textbox(
@@ -531,7 +531,7 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                 )
                 shift = gr.Slider(
                     minimum=1.0,
-                    maximum=5.0,
+                    maximum=10.0,
                     value=3.0,
                     step=0.1,
                     label=t("generation.shift_label"),
@@ -569,6 +569,34 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                     step=0.01,
                     label=t("generation.cfg_interval_end"),
                     visible=False
+                )
+
+            # APG (Autoperceptual Guidance) Melodic Variation Parameters (base model only)
+            gr.HTML(f"<h4>🎵 APG Melodic Variation (base model only)</h4>")
+            with gr.Row():
+                apg_norm_threshold = gr.Slider(
+                    minimum=0.0,
+                    maximum=20.0,
+                    value=2.5,
+                    step=0.5,
+                    label="APG Norm Threshold",
+                    info="L2 norm clip for guidance signal. Lower = suppresses pitch jumps. 0 = disabled. Try 5-15 for wider vocal range.",
+                )
+                apg_momentum = gr.Slider(
+                    minimum=-1.0,
+                    maximum=1.0,
+                    value=-0.75,
+                    step=0.05,
+                    label="APG Momentum",
+                    info="Guidance momentum. Negative = oscillating correction. Try -0.3 for smoother melodies, 0.15 for sustained phrases.",
+                )
+                apg_eta = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.0,
+                    step=0.05,
+                    label="APG Eta (Parallel Weight)",
+                    info="Parallel guidance component weight. 0 = orthogonal only. Try 0.3-0.5 to amplify melodic patterns.",
                 )
 
             # LM (Language Model) Parameters
@@ -620,6 +648,15 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
                     step=0.05,
                     scale=1,
                     info="Penalizes repeated audio codes to increase melodic variation. 1.0 = no penalty (default), 1.2-1.5 = more diverse melodies, >1.5 = experimental"
+                )
+                lm_no_repeat_ngram_size = gr.Slider(
+                    label="Note Change Speed (No-Repeat N-gram)",
+                    minimum=0,
+                    maximum=8,
+                    value=0,
+                    step=1,
+                    scale=1,
+                    info="Blocks repeating N consecutive audio codes. 0 = disabled, 3 = block 600ms patterns (faster note changes), 5 = very fast changes. Higher = more variation but may reduce coherence"
                 )
             
             with gr.Row():
@@ -769,6 +806,7 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
         "lm_top_k": lm_top_k,
         "lm_top_p": lm_top_p,
         "lm_repetition_penalty": lm_repetition_penalty,
+        "lm_no_repeat_ngram_size": lm_no_repeat_ngram_size,
         "lm_negative_prompt": lm_negative_prompt,
         "use_cot_metas": use_cot_metas,
         "use_cot_caption": use_cot_caption,
@@ -810,6 +848,9 @@ def create_generation_section(dit_handler, llm_handler, init_params=None, langua
         "shift": shift,
         "infer_method": infer_method,
         "custom_timesteps": custom_timesteps,
+        "apg_norm_threshold": apg_norm_threshold,
+        "apg_momentum": apg_momentum,
+        "apg_eta": apg_eta,
         "audio_format": audio_format,
         "think_checkbox": think_checkbox,
         "autogen_checkbox": autogen_checkbox,

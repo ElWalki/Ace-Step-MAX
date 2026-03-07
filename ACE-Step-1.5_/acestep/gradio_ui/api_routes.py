@@ -171,6 +171,78 @@ async def health_check():
     })
 
 
+@router.get("/v1/status")
+async def service_status(request: Request):
+    """Get service status including DiT and LLM model info"""
+    dit_handler = getattr(request.app.state, 'dit_handler', None)
+    llm_handler = getattr(request.app.state, 'llm_handler', None)
+
+    dit_info = None
+    if dit_handler and dit_handler.model is not None:
+        config_path = getattr(dit_handler, 'config_path', '') or ''
+        dit_info = {
+            "loaded": True,
+            "model": os.path.basename(config_path.rstrip("/\\")) if config_path else "unknown",
+            "is_turbo": getattr(getattr(dit_handler, 'config', None), 'is_turbo', False),
+        }
+    else:
+        dit_info = {"loaded": False, "model": None, "is_turbo": False}
+
+    llm_info = None
+    if llm_handler:
+        llm_info = {
+            "loaded": getattr(llm_handler, 'llm_initialized', False),
+            "model": getattr(llm_handler, 'lm_model_name', None),
+            "backend": getattr(llm_handler, 'llm_backend', None),
+        }
+    else:
+        llm_info = {"loaded": False, "model": None, "backend": None}
+
+    return _wrap_response({
+        "dit": dit_info,
+        "llm": llm_info,
+    })
+
+
+@router.post("/v1/llm/swap")
+async def swap_llm_model(request: Request):
+    """Hot-swap the LLM model: unload current, load new one.
+    
+    Body JSON: { "model": "acestep-5Hz-lm-0.6B", "backend": "pt" }
+    """
+    llm_handler = getattr(request.app.state, 'llm_handler', None)
+    if llm_handler is None:
+        return _wrap_response({"error": "LLM handler not available"}, code=500)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _wrap_response({"error": "Invalid JSON body"}, code=400)
+
+    model_name = body.get("model")
+    backend = body.get("backend", "pt")
+
+    if not model_name:
+        return _wrap_response({"error": "Missing 'model' field"}, code=400)
+
+    # Validate model name
+    available = llm_handler.get_available_5hz_lm_models()
+    if model_name not in available:
+        return _wrap_response({
+            "error": f"Model '{model_name}' not found. Available: {available}"
+        }, code=404)
+
+    # Perform the swap (blocking — takes 30-90s)
+    status_msg, success = llm_handler.swap_model(model_name, backend=backend)
+
+    return _wrap_response({
+        "success": success,
+        "message": status_msg,
+        "model": model_name if success else None,
+        "backend": llm_handler.llm_backend if success else None,
+    }, code=200 if success else 500)
+
+
 @router.get("/v1/models")
 async def list_models(request: Request, _: None = Depends(verify_api_key)):
     """List available DiT models"""
@@ -508,6 +580,11 @@ async def release_task(request: Request, authorization: Optional[str] = Header(N
             lm_temperature=lm_temperature,
             lm_cfg_scale=float(get_param("lm_cfg_scale", default=2.0) or 2.0),
             lm_negative_prompt=get_param("lm_negative_prompt", default="NO USER INPUT") or "NO USER INPUT",
+            lm_repetition_penalty=float(get_param("lm_repetition_penalty", default=1.2) or 1.2),
+            lm_no_repeat_ngram_size=int(get_param("lm_no_repeat_ngram_size", default=0) or 0),
+            apg_norm_threshold=float(get_param("apg_norm_threshold", default=2.5) or 2.5),
+            apg_momentum=float(get_param("apg_momentum", default=-0.75) or -0.75),
+            apg_eta=float(get_param("apg_eta", default=0.0) or 0.0),
         )
 
         config = GenerationConfig(

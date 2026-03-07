@@ -17,6 +17,7 @@ from transformers.generation.streamers import BaseStreamer
 from transformers.generation.logits_process import (
     LogitsProcessorList,
     RepetitionPenaltyLogitsProcessor,
+    NoRepeatNGramLogitsProcessor,
 )
 from acestep.constrained_logits_processor import MetadataConstrainedLogitsProcessor
 from acestep.constants import DEFAULT_LM_INSTRUCTION, DEFAULT_LM_UNDERSTAND_INSTRUCTION, DEFAULT_LM_INSPIRED_INSTRUCTION, DEFAULT_LM_REWRITE_INSTRUCTION
@@ -37,6 +38,7 @@ class LLMHandler:
         self.llm_tokenizer = None
         self.llm_initialized = False
         self.llm_backend = None
+        self.lm_model_name = None  # Track which LM model is loaded
         self.max_model_len = 4096
         self.device = "cpu"
         self.dtype = torch.float32
@@ -74,6 +76,95 @@ class LLMHandler:
 
         models.sort()
         return models
+
+    def unload(self) -> str:
+        """Unload the current LLM from memory and free GPU VRAM."""
+        if self.llm is None and not self.llm_initialized:
+            return "No LLM loaded"
+
+        old_name = self.lm_model_name or "unknown"
+        old_backend = self.llm_backend or "unknown"
+        logger.info(f"[LLM swap] Unloading LLM: {old_name} (backend={old_backend})")
+
+        # For vllm backend, destroy the engine to release KV cache blocks
+        if self.llm_backend == "vllm" and self.llm is not None:
+            try:
+                # nano-vllm LLM doesn't have a destroy method, so just delete it
+                del self.llm
+            except Exception as e:
+                logger.warning(f"[LLM swap] Error deleting vllm engine: {e}")
+            try:
+                from nanovllm.utils.context import reset_context
+                reset_context()
+            except ImportError:
+                pass
+        elif self.llm is not None:
+            # PyTorch: move to CPU first, then delete
+            try:
+                self.llm.cpu()
+            except Exception:
+                pass
+            del self.llm
+
+        self.llm = None
+        self.llm_initialized = False
+        self.llm_backend = None
+        self.lm_model_name = None
+        self.constrained_processor = None
+        self._hf_model_for_scoring = None
+
+        # Aggressive GPU cleanup
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
+        logger.info(f"[LLM swap] Unloaded {old_name} and freed GPU memory")
+        return f"Unloaded {old_name} ({old_backend})"
+
+    def swap_model(self, new_model_name: str, backend: str = "pt") -> Tuple[str, bool]:
+        """Hot-swap: unload current LLM and load a new one.
+        
+        Args:
+            new_model_name: Model directory name (e.g. 'acestep-5Hz-lm-0.6B')
+            backend: Backend to use ('pt' or 'vllm')
+        
+        Returns:
+            (status_message, success)
+        """
+        checkpoint_dir = self._get_checkpoint_dir()
+
+        # Check if new model exists
+        full_path = os.path.join(checkpoint_dir, new_model_name)
+        if not os.path.exists(full_path):
+            return f"❌ Model not found: {full_path}", False
+
+        # Skip if already loaded
+        if self.llm_initialized and self.lm_model_name == new_model_name and self.llm_backend == backend:
+            return f"✅ {new_model_name} is already loaded ({backend})", True
+
+        # Step 1: Unload current model
+        unload_msg = self.unload()
+        logger.info(f"[LLM swap] {unload_msg}")
+
+        # Step 2: Load new model
+        logger.info(f"[LLM swap] Loading new model: {new_model_name} (backend={backend})")
+        status_msg, success = self.initialize(
+            checkpoint_dir=checkpoint_dir,
+            lm_model_path=new_model_name,
+            backend=backend,
+            device="auto",
+            offload_to_cpu=self.offload_to_cpu,
+            dtype=None,
+        )
+
+        if success:
+            logger.info(f"[LLM swap] Successfully swapped to {new_model_name}")
+        else:
+            logger.error(f"[LLM swap] Failed to load {new_model_name}: {status_msg}")
+
+        return status_msg, success
     
     def get_gpu_memory_utilization(self, model_path: str = None, minimal_gpu: float = 8, min_ratio: float = 0.2, max_ratio: float = 0.9) -> Tuple[float, bool]:
         """
@@ -129,11 +220,13 @@ class LLMHandler:
         """Check if negative prompt is meaningful (not default/empty)"""
         return negative_prompt and negative_prompt.strip() and negative_prompt.strip() != "NO USER INPUT"
     
-    def _build_logits_processor(self, repetition_penalty: float) -> LogitsProcessorList:
-        """Build logits processor list with repetition penalty if needed"""
+    def _build_logits_processor(self, repetition_penalty: float, no_repeat_ngram_size: int = 0) -> LogitsProcessorList:
+        """Build logits processor list with repetition penalty and n-gram blocking if needed"""
         logits_processor = LogitsProcessorList()
         if repetition_penalty != 1.0:
             logits_processor.append(RepetitionPenaltyLogitsProcessor(penalty=repetition_penalty))
+        if no_repeat_ngram_size > 0:
+            logits_processor.append(NoRepeatNGramLogitsProcessor(no_repeat_ngram_size))
         return logits_processor
     
     def _setup_constrained_processor(
@@ -351,6 +444,8 @@ class LLMHandler:
             full_lm_model_path = os.path.join(checkpoint_dir, lm_model_path)
             if not os.path.exists(full_lm_model_path):
                 return f"❌ 5Hz LM model not found at {full_lm_model_path}", False
+            
+            self.lm_model_name = lm_model_path  # Track loaded model name
             
             logger.info("loading 5Hz LM tokenizer... it may take 80~90s")
             start_time = time.time()
@@ -578,6 +673,7 @@ class LLMHandler:
         top_k: Optional[int],
         top_p: Optional[float],
         repetition_penalty: float,
+        no_repeat_ngram_size: int,
         use_constrained_decoding: bool,
         constrained_decoding_debug: bool,
         target_duration: Optional[float],
@@ -630,7 +726,7 @@ class LLMHandler:
                 max_new_tokens = min(max_new_tokens, self.max_model_len - 64)
 
             # Build logits processor list (only for CFG and repetition penalty)
-            logits_processor = self._build_logits_processor(repetition_penalty)
+            logits_processor = self._build_logits_processor(repetition_penalty, no_repeat_ngram_size)
 
             if cfg_scale > 1.0:
                 # Build unconditional prompt based on generation phase
@@ -671,6 +767,7 @@ class LLMHandler:
                     top_k=top_k,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                     pad_token_id=self.llm_tokenizer.pad_token_id or self.llm_tokenizer.eos_token_id,
                     streamer=None,
                     constrained_processor=constrained_processor,
@@ -688,6 +785,7 @@ class LLMHandler:
                     top_k=top_k,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                     pad_token_id=self.llm_tokenizer.pad_token_id or self.llm_tokenizer.eos_token_id,
                     streamer=None,
                     constrained_processor=constrained_processor,
@@ -744,6 +842,7 @@ class LLMHandler:
         top_k: Optional[int],
         top_p: Optional[float],
         repetition_penalty: float,
+        no_repeat_ngram_size: int = 0,
         use_constrained_decoding: bool = True,
         constrained_decoding_debug: bool = False,
         target_duration: Optional[float] = None,
@@ -786,6 +885,7 @@ class LLMHandler:
                     top_k=top_k,
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
+                    no_repeat_ngram_size=no_repeat_ngram_size,
                     use_constrained_decoding=use_constrained_decoding,
                     constrained_decoding_debug=constrained_decoding_debug,
                     target_duration=target_duration,
@@ -815,6 +915,7 @@ class LLMHandler:
             top_k=top_k,
             top_p=top_p,
             repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             use_constrained_decoding=use_constrained_decoding,
             constrained_decoding_debug=constrained_decoding_debug,
             target_duration=target_duration,
@@ -877,6 +978,7 @@ class LLMHandler:
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
         repetition_penalty: float = 1.0,
+        no_repeat_ngram_size: int = 0,
         use_constrained_decoding: bool = True,
         constrained_decoding_debug: bool = False,
         target_duration: Optional[float] = None,
@@ -972,6 +1074,7 @@ class LLMHandler:
                     "top_k": top_k,
                     "top_p": top_p,
                     "repetition_penalty": repetition_penalty,
+                    "no_repeat_ngram_size": no_repeat_ngram_size,
                     "target_duration": None,  # No duration constraint for CoT phase
                     "user_metadata": user_metadata,
                     "skip_caption": not use_cot_caption,
@@ -1157,6 +1260,7 @@ class LLMHandler:
                     "top_k": top_k,
                     "top_p": top_p,
                     "repetition_penalty": repetition_penalty,
+                    "no_repeat_ngram_size": no_repeat_ngram_size,
                     "target_duration": target_duration,
                     "user_metadata": None,  # No user metadata injection in Phase 2
                     "skip_caption": True,  # Skip caption since CoT is already included
@@ -1925,6 +2029,7 @@ class LLMHandler:
         top_k = cfg.get("top_k")
         top_p = cfg.get("top_p")
         repetition_penalty = cfg.get("repetition_penalty", 1.0)
+        no_repeat_ngram_size = cfg.get("no_repeat_ngram_size", 0)
         target_duration = cfg.get("target_duration")
         user_metadata = cfg.get("user_metadata")  # User-provided metadata fields
         skip_caption = cfg.get("skip_caption", False)  # Skip caption generation in CoT
@@ -1970,6 +2075,7 @@ class LLMHandler:
                 top_k=top_k,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
+                no_repeat_ngram_size=no_repeat_ngram_size,
                 use_constrained_decoding=use_constrained_decoding,
                 constrained_decoding_debug=constrained_decoding_debug,
                 target_duration=target_duration,
@@ -2016,6 +2122,7 @@ class LLMHandler:
         top_k: Optional[int],
         top_p: Optional[float],
         repetition_penalty: float,
+        no_repeat_ngram_size: int,
         pad_token_id: int,
         streamer: Optional[BaseStreamer],
         constrained_processor: Optional[MetadataConstrainedLogitsProcessor] = None,
@@ -2047,7 +2154,7 @@ class LLMHandler:
             eos_token_id = pad_token_id
         
         # Build logits processor for repetition penalty
-        logits_processor = self._build_logits_processor(repetition_penalty)
+        logits_processor = self._build_logits_processor(repetition_penalty, no_repeat_ngram_size)
         
         with torch.no_grad():
             for step in range(max_new_tokens):
@@ -2110,6 +2217,7 @@ class LLMHandler:
         top_k: Optional[int],
         top_p: Optional[float],
         repetition_penalty: float,
+        no_repeat_ngram_size: int,
         pad_token_id: int,
         streamer: Optional[BaseStreamer],
         constrained_processor: Optional[MetadataConstrainedLogitsProcessor] = None,
@@ -2152,7 +2260,7 @@ class LLMHandler:
             eos_token_id = pad_token_id
         
         # Build logits processor for non-CFG operations (repetition penalty, top_k, top_p)
-        logits_processor = self._build_logits_processor(repetition_penalty)
+        logits_processor = self._build_logits_processor(repetition_penalty, no_repeat_ngram_size)
         
         with torch.no_grad():
             for step in range(max_new_tokens):

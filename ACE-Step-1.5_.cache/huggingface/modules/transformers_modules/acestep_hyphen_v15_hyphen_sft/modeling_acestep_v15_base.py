@@ -1809,6 +1809,9 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         use_adg: bool = False,
         shift: float = 1.0,
         timesteps: Optional[torch.Tensor] = None,
+        apg_norm_threshold: float = 2.5,
+        apg_momentum: float = -0.75,
+        apg_eta: float = 0.0,
         **kwargs,
     ):
         if attention_mask is None:
@@ -1880,7 +1883,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         noise = self.prepare_noise(context_latents, seed)
         bsz, device, dtype = context_latents.shape[0], context_latents.device, context_latents.dtype
         past_key_values = EncoderDecoderCache(DynamicCache(), DynamicCache())
-        momentum_buffer = MomentumBuffer()
+        momentum_buffer = MomentumBuffer(momentum=apg_momentum)
         
         # main task condition
         do_cfg_guidance = diffusion_guidance_sale > 1.0
@@ -1932,6 +1935,8 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
                                 pred_uncond=pred_null_cond,
                                 guidance_scale=diffusion_guidance_sale,
                                 momentum_buffer=momentum_buffer,
+                                eta=apg_eta,
+                                norm_threshold=apg_norm_threshold,
                                 dims=[1],
                             )
                         else:
