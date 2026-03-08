@@ -140,6 +140,8 @@ ACE-Step-1.5_ /
 
 # Images (large)
 *.png
+# But allow product screenshots
+!IMAGES/*.png
 *.jpg
 *.jpeg
 *.gif
