@@ -241,21 +241,21 @@ start "ACE-Step Gradio API" "%LAUNCHER_DIR%\_gradio.cmd"
 
 REM ─── Esperar / Wait for Gradio ──────────────────────────────
 echo.
-echo ╔══════════════════════════════════════════════════════════════╗
+echo ╔═════════════════════════════════════════════════════════════╗
 echo ║   CARGANDO EL MODELO DE IA / LOADING THE AI MODEL           ║
-echo ╠══════════════════════════════════════════════════════════════╣
-echo ║                                                              ║
+echo ╠═════════════════════════════════════════════════════════════╣
+echo ║                                                             ║
 echo ║  ACE-Step necesita cargar varios GB de pesos del modelo     ║
 echo ║  en la GPU antes de poder generar musica.                   ║
-echo ║                                                              ║
+echo ║                                                             ║
 echo ║  Esto es NORMAL y ocurre siempre al iniciar:                ║
 echo ║    - Primera vez: puede tardar 2-5 minutos                  ║
 echo ║    - Usos siguientes: 1-2 minutos (cache caliente)          ║
-echo ║                                                              ║
+echo ║                                                             ║
 echo ║  Por favor, SE PACIENTE y no cierres esta ventana.          ║
 echo ║  Please be PATIENT and do not close this window.            ║
-echo ║                                                              ║
-echo ╚══════════════════════════════════════════════════════════════╝
+echo ║                                                             ║
+echo ╚═════════════════════════════════════════════════════════════╝
 echo.
 
 set READY=0
@@ -299,9 +299,9 @@ goto WAIT_GRADIO
 
 :GRADIO_READY
 echo.
-echo  ╔══════════════════════════════════════════════════════════════╗
+echo  ╔═════════════════════════════════════════════════════════════╗
 echo  ║  ✓  MODELO LISTO / MODEL READY!                             ║
-echo  ╚══════════════════════════════════════════════════════════════╝
+echo  ╚═════════════════════════════════════════════════════════════╝
 echo.
 
 :GRADIO_CONTINUE
