@@ -94,14 +94,14 @@ export type ChordQuality = 'major' | 'minor' | 'dim' | 'aug' | 'maj7' | 'min7' |
 const CHORD_INTERVALS: Record<ChordQuality, number[]> = {
   major: [0, 4, 7],
   minor: [0, 3, 7],
-  dim:   [0, 3, 6],
-  aug:   [0, 4, 8],
-  maj7:  [0, 4, 7, 11],
-  min7:  [0, 3, 7, 10],
-  dom7:  [0, 4, 7, 10],
-  dim7:  [0, 3, 6, 9],
-  sus2:  [0, 2, 7],
-  sus4:  [0, 5, 7],
+  dim: [0, 3, 6],
+  aug: [0, 4, 8],
+  maj7: [0, 4, 7, 11],
+  min7: [0, 3, 7, 10],
+  dom7: [0, 4, 7, 10],
+  dim7: [0, 3, 6, 9],
+  sus2: [0, 2, 7],
+  sus4: [0, 5, 7],
 };
 
 // ---------------------------------------------------------------------------
@@ -363,7 +363,7 @@ export class ChordAudioEngine {
           gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
           osc.stop(ctx.currentTime + 0.06);
         }
-      } catch {}
+      } catch { }
     });
     this.activeNodes = [];
     this._onBeatCallback?.(-1);
@@ -373,7 +373,7 @@ export class ChordAudioEngine {
   dispose(): void {
     this.stop();
     if (this.ctx && this.ctx.state !== 'closed') {
-      this.ctx.close().catch(() => {});
+      this.ctx.close().catch(() => { });
     }
     this.ctx = null;
     this.masterGain = null;
@@ -480,57 +480,57 @@ export interface ChordPreset {
 
 export const CHORD_PRESETS: ChordPreset[] = [
   // ===== ROMANTIC / EMOTIONAL =====
-  { id: 'pop-canon', name: 'Pop Canon', key: 'C', scale: 'major', roman: 'I - V - vi - IV', mood: 'romantic', description: 'La progresión pop más famosa del mundo', emoji: '💕' },
-  { id: 'sensitive', name: 'Sensible', key: 'G', scale: 'major', roman: 'vi - IV - I - V', mood: 'romantic', description: 'Feel emocional suave, ideal para baladas', emoji: '🥹' },
-  { id: 'fifties', name: 'Clásica 50s', key: 'C', scale: 'major', roman: 'I - vi - IV - V', mood: 'romantic', description: 'Progresión doo-wop clásica', emoji: '🎶' },
-  { id: 'dreamy', name: 'Soñadora', key: 'D', scale: 'major', roman: 'I - iii - vi - IV', mood: 'romantic', description: 'Atmosférica y etérea', emoji: '✨' },
-  { id: 'emotional-climb', name: 'Ascenso Emotivo', key: 'A', scale: 'minor', roman: 'i - VII - VI - V', mood: 'romantic', description: 'Cadencia andaluza, tensión creciente', emoji: '🌊' },
-  { id: 'bm-romantic', name: 'Bm Romántica', key: 'B', scale: 'minor', roman: 'i - V - IV - I', mood: 'romantic', description: 'Progresión romántica en Bm', emoji: '💜' },
-  { id: 'bm-epic-rom', name: 'Bm Épica Romántica', key: 'B', scale: 'minor', roman: 'i - V - VI - VII', mood: 'romantic', description: 'Ascenso épico romántico en Bm', emoji: '🌅' },
-  { id: 'ab-tender', name: 'Ab Tierna', key: 'G#', scale: 'major', roman: 'II - IV - I - V', mood: 'romantic', description: 'Inicio con II grado, delicada y dulce', emoji: '🌸' },
-  { id: 'fm-passionate', name: 'F#m Apasionada', key: 'F#', scale: 'minor', roman: 'i - VI - VII - V', mood: 'romantic', description: 'Progresión apasionada con tensión', emoji: '🔥' },
-  { id: 'cm-melancholic', name: 'Cm Melancólica', key: 'C', scale: 'minor', roman: 'i - III - VII - IV', mood: 'romantic', description: 'Melancolía profunda, ideal para R&B', emoji: '🌙' },
+  { id: 'pop-canon', name: 'Pop Canon', key: 'C', scale: 'major', roman: 'I - V - vi - IV', mood: 'romantic', description: 'pop-canon-desc', emoji: '💕' },
+  { id: 'sensitive', name: 'Sensible', key: 'G', scale: 'major', roman: 'vi - IV - I - V', mood: 'romantic', description: 'sensitive-desc', emoji: '🥹' },
+  { id: 'fifties', name: 'Clásica 50s', key: 'C', scale: 'major', roman: 'I - vi - IV - V', mood: 'romantic', description: 'fifties-desc', emoji: '🎶' },
+  { id: 'dreamy', name: 'Soñadora', key: 'D', scale: 'major', roman: 'I - iii - vi - IV', mood: 'romantic', description: 'dreamy-desc', emoji: '✨' },
+  { id: 'emotional-climb', name: 'Ascenso Emotivo', key: 'A', scale: 'minor', roman: 'i - VII - VI - V', mood: 'romantic', description: 'emotional-climb-desc', emoji: '🌊' },
+  { id: 'bm-romantic', name: 'Bm Romántica', key: 'B', scale: 'minor', roman: 'i - V - IV - I', mood: 'romantic', description: 'bm-romantic-desc', emoji: '💜' },
+  { id: 'bm-epic-rom', name: 'Bm Épica Romántica', key: 'B', scale: 'minor', roman: 'i - V - VI - VII', mood: 'romantic', description: 'bm-epic-rom-desc', emoji: '🌅' },
+  { id: 'ab-tender', name: 'Ab Tierna', key: 'G#', scale: 'major', roman: 'II - IV - I - V', mood: 'romantic', description: 'ab-tender-desc', emoji: '🌸' },
+  { id: 'fm-passionate', name: 'F#m Apasionada', key: 'F#', scale: 'minor', roman: 'i - VI - VII - V', mood: 'romantic', description: 'fm-passionate-desc', emoji: '🔥' },
+  { id: 'cm-melancholic', name: 'Cm Melancólica', key: 'C', scale: 'minor', roman: 'i - III - VII - IV', mood: 'romantic', description: 'cm-melancholic-desc', emoji: '🌙' },
 
   // ===== DARK / MOODY =====
-  { id: 'andalusian', name: 'Andaluza', key: 'A', scale: 'minor', roman: 'i - VII - VI - V', mood: 'dark', description: 'Cadencia andaluza, flamenco, misterio', emoji: '🖤' },
-  { id: 'epic-minor', name: 'Épica Menor', key: 'D', scale: 'minor', roman: 'i - iv - VII - III', mood: 'dark', description: 'Grandiosa y oscura, estilo cinematográfico', emoji: '⚔️' },
-  { id: 'minor-pop', name: 'Pop Oscuro', key: 'E', scale: 'minor', roman: 'i - VI - III - VII', mood: 'dark', description: 'Pop alternativo melancólico', emoji: '🌑' },
-  { id: 'dark-tension', name: 'Tensión Oscura', key: 'C', scale: 'minor', roman: 'i - VII - iv - V', mood: 'dark', description: 'Tensión dramática intensa', emoji: '😈' },
-  { id: 'gothic', name: 'Gótica', key: 'G', scale: 'minor', roman: 'i - iv - i - V', mood: 'dark', description: 'Atmosfera gótica y misteriosa', emoji: '🦇' },
-  { id: 'doom', name: 'Doom Pesado', key: 'D', scale: 'minor', roman: 'i - bII - V - i', mood: 'dark', description: 'Heavy y opresivo, neapolitan movement', emoji: '💀' },
+  { id: 'andalusian', name: 'Andaluza', key: 'A', scale: 'minor', roman: 'i - VII - VI - V', mood: 'dark', description: 'andalusian-desc', emoji: '🖤' },
+  { id: 'epic-minor', name: 'Épica Menor', key: 'D', scale: 'minor', roman: 'i - iv - VII - III', mood: 'dark', description: 'epic-minor-desc', emoji: '⚔️' },
+  { id: 'minor-pop', name: 'Pop Oscuro', key: 'E', scale: 'minor', roman: 'i - VI - III - VII', mood: 'dark', description: 'minor-pop-desc', emoji: '🌑' },
+  { id: 'dark-tension', name: 'Tensión Oscura', key: 'C', scale: 'minor', roman: 'i - VII - iv - V', mood: 'dark', description: 'dark-tension-desc', emoji: '😈' },
+  { id: 'gothic', name: 'Gótica', key: 'G', scale: 'minor', roman: 'i - iv - i - V', mood: 'dark', description: 'gothic-desc', emoji: '🦇' },
+  { id: 'doom', name: 'Doom Pesado', key: 'D', scale: 'minor', roman: 'i - bII - V - i', mood: 'dark', description: 'doom-desc', emoji: '💀' },
 
   // ===== UPBEAT / HAPPY =====
-  { id: 'classic-rock', name: 'Rock Clásico', key: 'A', scale: 'major', roman: 'I - IV - V - I', mood: 'upbeat', description: 'Base de rock and roll puro', emoji: '🎸' },
-  { id: 'country-folk', name: 'Country/Folk', key: 'G', scale: 'major', roman: 'I - V - IV - V', mood: 'upbeat', description: 'Feel country, acústico y cálido', emoji: '🤠' },
-  { id: 'bright-pop', name: 'Pop Brillante', key: 'C', scale: 'major', roman: 'I - IV - vi - V', mood: 'upbeat', description: 'Alegre y radiante, pop moderno', emoji: '☀️' },
-  { id: 'bright-folk', name: 'Folk Luminoso', key: 'D', scale: 'major', roman: 'I - ii - IV - V', mood: 'upbeat', description: 'Cálido y orgánico', emoji: '🌻' },
-  { id: 'optimista', name: 'Optimista', key: 'F', scale: 'major', roman: 'I - V - vi - ii - IV - V', mood: 'upbeat', description: 'Progresión extendida llena de optimismo', emoji: '🎉' },
+  { id: 'classic-rock', name: 'Rock Clásico', key: 'A', scale: 'major', roman: 'I - IV - V - I', mood: 'upbeat', description: 'classic-rock-desc', emoji: '🎸' },
+  { id: 'country-folk', name: 'Country/Folk', key: 'G', scale: 'major', roman: 'I - V - IV - V', mood: 'upbeat', description: 'country-folk-desc', emoji: '🤠' },
+  { id: 'bright-pop', name: 'Pop Brillante', key: 'C', scale: 'major', roman: 'I - IV - vi - V', mood: 'upbeat', description: 'bright-pop-desc', emoji: '☀️' },
+  { id: 'bright-folk', name: 'Folk Luminoso', key: 'D', scale: 'major', roman: 'I - ii - IV - V', mood: 'upbeat', description: 'bright-folk-desc', emoji: '🌻' },
+  { id: 'optimista', name: 'Optimista', key: 'F', scale: 'major', roman: 'I - V - vi - ii - IV - V', mood: 'upbeat', description: 'optimista-desc', emoji: '🎉' },
 
   // ===== JAZZ / SOPHISTICATED =====
-  { id: 'jazz-251', name: 'Jazz II-V-I', key: 'C', scale: 'major', roman: 'ii7 - V7 - Imaj7', mood: 'jazz', description: 'La cadencia jazz por excelencia', emoji: '🎷' },
-  { id: 'jazz-turnaround', name: 'Jazz Turnaround', key: 'C', scale: 'major', roman: 'Imaj7 - vi7 - ii7 - V7', mood: 'jazz', description: 'Ciclo turnaround de jazz estándar', emoji: '🎹' },
-  { id: 'rhythm-changes', name: 'Rhythm Changes', key: 'Bb', scale: 'major', roman: 'I - VI7 - ii - V7', mood: 'jazz', description: 'Basado en "I Got Rhythm"', emoji: '🎺' },
-  { id: 'circle-fifths', name: 'Círculo de Quintas', key: 'C', scale: 'major', roman: 'iii7 - vi7 - ii7 - V7', mood: 'jazz', description: 'Cadena de quintas descendentes', emoji: '🔄' },
+  { id: 'jazz-251', name: 'Jazz II-V-I', key: 'C', scale: 'major', roman: 'ii7 - V7 - Imaj7', mood: 'jazz', description: 'jazz-251-desc', emoji: '🎷' },
+  { id: 'jazz-turnaround', name: 'Jazz Turnaround', key: 'C', scale: 'major', roman: 'Imaj7 - vi7 - ii7 - V7', mood: 'jazz', description: 'jazz-turnaround-desc', emoji: '🎹' },
+  { id: 'rhythm-changes', name: 'Rhythm Changes', key: 'Bb', scale: 'major', roman: 'I - VI7 - ii - V7', mood: 'jazz', description: 'rhythm-changes-desc', emoji: '🎺' },
+  { id: 'circle-fifths', name: 'Círculo de Quintas', key: 'C', scale: 'major', roman: 'iii7 - vi7 - ii7 - V7', mood: 'jazz', description: 'circle-fifths-desc', emoji: '🔄' },
 
   // ===== LATIN / WORLD =====
-  { id: 'reggaeton', name: 'Reggaetón', key: 'A', scale: 'minor', roman: 'i - iv - VII - III', mood: 'latin', description: 'Progresión universal del reggaetón', emoji: '🔊' },
-  { id: 'latin-pop', name: 'Latin Pop', key: 'E', scale: 'minor', roman: 'i - VII - VI - VII', mood: 'latin', description: 'Base de pop latino pegajosa', emoji: '💃' },
-  { id: 'flamenco', name: 'Flamenco', key: 'E', scale: 'minor', roman: 'i - iv - V - i', mood: 'latin', description: 'Feel flamenco auténtico', emoji: '🇪🇸' },
-  { id: 'bossa', name: 'Bossa Nova', key: 'C', scale: 'major', roman: 'Imaj7 - ii7 - iii7 - vi7', mood: 'latin', description: 'Atmósfera bossa nova suave', emoji: '🏖️' },
+  { id: 'reggaeton', name: 'Reggaetón', key: 'A', scale: 'minor', roman: 'i - iv - VII - III', mood: 'latin', description: 'reggaeton-desc', emoji: '🔊' },
+  { id: 'latin-pop', name: 'Latin Pop', key: 'E', scale: 'minor', roman: 'i - VII - VI - VII', mood: 'latin', description: 'latin-pop-desc', emoji: '💃' },
+  { id: 'flamenco', name: 'Flamenco', key: 'E', scale: 'minor', roman: 'i - iv - V - i', mood: 'latin', description: 'flamenco-desc', emoji: '🇪🇸' },
+  { id: 'bossa', name: 'Bossa Nova', key: 'C', scale: 'major', roman: 'Imaj7 - ii7 - iii7 - vi7', mood: 'latin', description: 'bossa-desc', emoji: '🏖️' },
 
   // ===== LO-FI / CHILL =====
-  { id: 'neosoul', name: 'Neo-Soul', key: 'D', scale: 'major', roman: 'Imaj7 - iii7 - vi7 - IVmaj7', mood: 'lofi', description: 'Suave y sofisticado, vibes neo-soul', emoji: '🎧' },
-  { id: 'lofi-jazz', name: 'Lo-Fi Jazz', key: 'F', scale: 'major', roman: 'ii7 - V7 - Imaj7 - vi7', mood: 'lofi', description: 'Perfecto para beats lo-fi y chill', emoji: '☕' },
-  { id: 'chill-minor', name: 'Chill Minor', key: 'A', scale: 'minor', roman: 'i - III - VII - iv', mood: 'lofi', description: 'Melancólico pero relajado', emoji: '🌧️' },
+  { id: 'neosoul', name: 'Neo-Soul', key: 'D', scale: 'major', roman: 'Imaj7 - iii7 - vi7 - IVmaj7', mood: 'lofi', description: 'neosoul-desc', emoji: '🎧' },
+  { id: 'lofi-jazz', name: 'Lo-Fi Jazz', key: 'F', scale: 'major', roman: 'ii7 - V7 - Imaj7 - vi7', mood: 'lofi', description: 'lofi-jazz-desc', emoji: '☕' },
+  { id: 'chill-minor', name: 'Chill Minor', key: 'A', scale: 'minor', roman: 'i - III - VII - iv', mood: 'lofi', description: 'chill-minor-desc', emoji: '🌧️' },
 
   // ===== EPIC / CINEMATIC =====
-  { id: 'heroic', name: 'Heroica', key: 'C', scale: 'major', roman: 'I - V - vi - iii - IV - I - IV - V', mood: 'epic', description: 'Pachelbel Canon, épica cinematográfica', emoji: '🏰' },
-  { id: 'battle', name: 'Batalla', key: 'D', scale: 'minor', roman: 'i - III - VII - i', mood: 'epic', description: 'Intensidad bélica, soundtrack', emoji: '⚡' },
-  { id: 'triumph', name: 'Triunfo', key: 'C', scale: 'major', roman: 'IV - V - vi - I', mood: 'epic', description: 'Clímax emotivo, momento de victoria', emoji: '🏆' },
+  { id: 'heroic', name: 'Heroica', key: 'C', scale: 'major', roman: 'I - V - vi - iii - IV - I - IV - V', mood: 'epic', description: 'heroic-desc', emoji: '🏰' },
+  { id: 'battle', name: 'Batalla', key: 'D', scale: 'minor', roman: 'i - III - VII - i', mood: 'epic', description: 'battle-desc', emoji: '⚡' },
+  { id: 'triumph', name: 'Triunfo', key: 'C', scale: 'major', roman: 'IV - V - vi - I', mood: 'epic', description: 'triumph-desc', emoji: '🏆' },
 
   // ===== FOLK =====
-  { id: 'celtic', name: 'Celta', key: 'D', scale: 'major', roman: 'I - IV - I - V', mood: 'folk', description: 'Progresión celta tradicional', emoji: '🍀' },
-  { id: 'bluegrass', name: 'Bluegrass', key: 'G', scale: 'major', roman: 'I - IV - I - V - I', mood: 'folk', description: 'Country bluegrass tradicional', emoji: '🎻' },
+  { id: 'celtic', name: 'Celta', key: 'D', scale: 'major', roman: 'I - IV - I - V', mood: 'folk', description: 'celtic-desc', emoji: '🍀' },
+  { id: 'bluegrass', name: 'Bluegrass', key: 'G', scale: 'major', roman: 'I - IV - I - V - I', mood: 'folk', description: 'bluegrass-desc', emoji: '🎻' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -538,14 +538,14 @@ export const CHORD_PRESETS: ChordPreset[] = [
 // ---------------------------------------------------------------------------
 
 export const MOOD_INFO: Record<ProgressionMood, { label: string; emoji: string; color: string }> = {
-  romantic: { label: 'Romántico', emoji: '💕', color: 'pink' },
-  dark:     { label: 'Oscuro',    emoji: '🖤', color: 'red' },
-  upbeat:   { label: 'Alegre',    emoji: '☀️', color: 'yellow' },
-  jazz:     { label: 'Jazz',      emoji: '🎷', color: 'amber' },
-  latin:    { label: 'Latino',    emoji: '💃', color: 'orange' },
-  lofi:     { label: 'Lo-Fi',     emoji: '☕', color: 'cyan' },
-  epic:     { label: 'Épico',     emoji: '⚔️', color: 'purple' },
-  folk:     { label: 'Folk',      emoji: '🍀', color: 'green' },
+  romantic: { label: 'mood-romantic', emoji: '💕', color: 'pink' },
+  dark: { label: 'mood-dark', emoji: '🖤', color: 'red' },
+  upbeat: { label: 'mood-upbeat', emoji: '☀️', color: 'yellow' },
+  jazz: { label: 'mood-jazz', emoji: '🎷', color: 'amber' },
+  latin: { label: 'mood-latin', emoji: '💃', color: 'orange' },
+  lofi: { label: 'mood-lofi', emoji: '☕', color: 'cyan' },
+  epic: { label: 'mood-epic', emoji: '⚔️', color: 'purple' },
+  folk: { label: 'mood-folk', emoji: '🍀', color: 'green' },
 };
 
 export const ALL_MOODS: ProgressionMood[] = ['romantic', 'dark', 'upbeat', 'jazz', 'latin', 'lofi', 'epic', 'folk'];

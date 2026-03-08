@@ -21,7 +21,7 @@
 
 All user-facing text has been renamed from "ACE-Step UI" to "ProdIA pro".
 
-- Page title, meta tags, sidebar, translations (EN/ZH/JA/KO)
+- Page title, meta tags, sidebar, translations (EN/ES/ZH/JA/KO)
 - `package.json` name and version updated
 
 ---
@@ -212,7 +212,7 @@ All original features remain fully functional:
 - ✅ Video generator (Pexels backgrounds)
 - ✅ Gradient album covers (procedural, no internet)
 - ✅ LAN access
-- ✅ Multi-language (EN, ZH, JA, KO)
+- ✅ Multi-language (EN, ES, ZH, JA, KO)
 - ✅ SQLite local-first database
 
 ---

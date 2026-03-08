@@ -22,8 +22,8 @@ interface SongProfileProps {
 const updateMetaTags = (song: Song) => {
     const baseUrl = window.location.origin;
     const songUrl = `${baseUrl}/song/${song.id}`;
-    const title = `${song.title} by ${song.creator || 'Unknown Artist'} | ACE-Step UI`;
-    const description = `Listen to "${song.title}" - ${song.style}. ${song.viewCount || 0} plays, ${song.likeCount || 0} likes. Create your own AI music with ACE-Step UI.`;
+    const title = `${song.title} by ${song.creator || 'Unknown Artist'} | ProdIA pro`;
+    const description = `Listen to "${song.title}" - ${song.style}. ${song.viewCount || 0} plays, ${song.likeCount || 0} likes. Create your own AI music with ProdIA pro.`;
 
     document.title = title;
 
@@ -63,7 +63,7 @@ const updateMetaTags = (song: Song) => {
 };
 
 const resetMetaTags = () => {
-    document.title = 'ACE-Step UI - Local AI Music Generator';
+    document.title = 'ProdIA pro - Local AI Music Generator';
     const defaultDescription = 'Create original music with AI locally. Generate songs in any style with custom lyrics and professional quality using ACE-Step.';
     const defaultImage = '/og-image.png';
 
@@ -73,11 +73,11 @@ const resetMetaTags = () => {
     };
 
     updateMeta('meta[name="description"]', defaultDescription);
-    updateMeta('meta[property="og:title"]', 'ACE-Step UI - Local AI Music Generator');
+    updateMeta('meta[property="og:title"]', 'ProdIA pro - Local AI Music Generator');
     updateMeta('meta[property="og:description"]', defaultDescription);
     updateMeta('meta[property="og:image"]', defaultImage);
     updateMeta('meta[property="og:type"]', 'website');
-    updateMeta('meta[name="twitter:title"]', 'ACE-Step UI - Local AI Music Generator');
+    updateMeta('meta[name="twitter:title"]', 'ProdIA pro - Local AI Music Generator');
     updateMeta('meta[name="twitter:description"]', defaultDescription);
     updateMeta('meta[name="twitter:image"]', defaultImage);
 };
@@ -307,8 +307,8 @@ export const SongProfile: React.FC<SongProfileProps> = ({ songId, onBack, onPlay
                                         isOpen={showDropdown}
                                         onClose={() => setShowDropdown(false)}
                                         isOwner={user?.id === song.userId}
-                                        onReusePrompt={() => {}}
-                                        onAddToPlaylist={() => {}}
+                                        onReusePrompt={() => { }}
+                                        onAddToPlaylist={() => { }}
                                         onDelete={() => onDelete?.(song)}
                                         onShare={() => setShareModalOpen(true)}
                                         onViewConfig={() => setShowConfig(true)}
