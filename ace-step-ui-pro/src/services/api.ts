@@ -137,7 +137,17 @@ export const generateApi = {
 
   // Stems
   separateStems: (params: { audioUrl: string; quality?: string; backend?: string; model?: string; stems?: number }, token: string) =>
-    api<{ success: boolean; allStems: any[]; elapsed: number }>('/api/training/separate-stems', { method: 'POST', body: params, token }),
+    api<{ success: boolean; allStems: any[]; elapsed: number }>('/api/training/separate-stems', {
+      method: 'POST',
+      body: {
+        audioPath: params.audioUrl,
+        quality: params.quality,
+        backend: params.backend,
+        model: params.model,
+        stems: params.stems,
+      },
+      token,
+    }),
 };
 
 export interface GpuInfo {
