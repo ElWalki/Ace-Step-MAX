@@ -42,28 +42,36 @@ export default function WaveformPlayer({
   useEffect(() => {
     if (!src) return;
     let cancelled = false;
-    const ac = new AudioContext();
-    fetch(src)
-      .then(r => r.arrayBuffer())
-      .then(buf => ac.decodeAudioData(buf))
-      .then(decoded => {
+
+    const decode = async () => {
+      try {
+        const response = await fetch(src);
+        const buf = await response.arrayBuffer();
+        const ac = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const decoded = await ac.decodeAudioData(buf);
+        await ac.close();
         if (cancelled) return;
         const raw = decoded.getChannelData(0);
         const bars = 500;
-        const step = Math.floor(raw.length / bars);
+        const step = Math.max(1, Math.floor(raw.length / bars));
         const p: number[] = [];
         for (let i = 0; i < bars; i++) {
           let max = 0;
           for (let j = 0; j < step; j++) {
-            const v = Math.abs(raw[i * step + j]);
+            const v = Math.abs(raw[i * step + j] || 0);
             if (v > max) max = v;
           }
           p.push(max);
         }
         setPeaks(p);
-      })
-      .catch(() => setPeaks([]));
-    return () => { cancelled = true; ac.close().catch(() => {}); };
+      } catch {
+        // Decode failed — show flat line fallback
+        setPeaks(new Array(500).fill(0.05));
+      }
+    };
+
+    decode();
+    return () => { cancelled = true; };
   }, [src]);
 
   // Sync canvas resolution with element size via ResizeObserver
