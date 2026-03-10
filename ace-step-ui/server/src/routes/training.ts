@@ -1328,7 +1328,7 @@ router.post('/auto-label-single', authMiddleware, async (req: AuthenticatedReque
 // POST /api/training/separate-stems — Separate audio into stems using Demucs or UVR (MDX-Net)
 router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { audioPath, quality = 'alta', backend = 'demucs', model, stems = 2 } = req.body;
+    const { audioPath, quality = 'alta', backend = 'demucs', model, stems = 2, regionStart, regionEnd } = req.body;
 
     if (!audioPath || typeof audioPath !== 'string') {
       res.status(400).json({ error: 'audioPath is required' });
@@ -1348,6 +1348,64 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
     if (!existsSync(resolvedAudio)) {
       res.status(404).json({ error: `Audio file not found: ${audioPath}` });
       return;
+    }
+
+    // If region extraction is requested, cut the audio first with ffmpeg
+    let audioToProcess = resolvedAudio;
+    let tempRegionFile: string | null = null;
+    
+    if (typeof regionStart === 'number' && typeof regionEnd === 'number' && regionEnd > regionStart) {
+      const tempDir = path.join(__dirname, '../../public/audio/temp');
+      await mkdir(tempDir, { recursive: true });
+      
+      const baseName = path.basename(resolvedAudio, path.extname(resolvedAudio));
+      const timestamp = Date.now();
+      tempRegionFile = path.join(tempDir, `${baseName}_region_${regionStart}-${regionEnd}_${timestamp}.wav`);
+      
+      console.log(`[Training] Extracting region ${regionStart}s-${regionEnd}s from ${resolvedAudio}`);
+      
+      // Use ffmpeg to cut the audio region
+      const duration = regionEnd - regionStart;
+      const ffmpegArgs = [
+        '-i', resolvedAudio,
+        '-ss', String(regionStart),
+        '-t', String(duration),
+        '-c', 'copy',
+        '-y',
+        tempRegionFile
+      ];
+      
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+          let stderr = '';
+          
+          ffmpeg.stderr.on('data', (data: Buffer) => {
+            stderr += data.toString();
+          });
+          
+          ffmpeg.on('close', (code: number | null) => {
+            if (code !== 0) {
+              console.error(`[Training] ffmpeg error:`, stderr);
+              reject(new Error(`ffmpeg exited with code ${code}`));
+            } else {
+              console.log(`[Training] Region extracted to: ${tempRegionFile}`);
+              resolve();
+            }
+          });
+          
+          ffmpeg.on('error', (err: Error) => {
+            console.error(`[Training] Failed to spawn ffmpeg:`, err);
+            reject(err);
+          });
+        });
+        
+        audioToProcess = tempRegionFile;
+      } catch (ffmpegError) {
+        console.error('[Training] Region extraction failed:', ffmpegError);
+        res.status(500).json({ error: 'Failed to extract audio region. Make sure ffmpeg is installed.' });
+        return;
+      }
     }
 
     // Output directory for separated stems
@@ -1370,7 +1428,7 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
     const safeStems = [2, 4, 6].includes(Number(stems)) ? Number(stems) : 2;
 
     // --- Cache check: skip re-processing if stems already exist ---
-    const baseName = path.basename(resolvedAudio, path.extname(resolvedAudio));
+    const baseName = path.basename(audioToProcess, path.extname(audioToProcess));
     const cachePrefix = `${baseName}_`;
     const expectedStems = safeStems >= 6
       ? ['vocals', 'drums', 'bass', 'other', 'guitar', 'piano']
@@ -1407,14 +1465,18 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
       if (cachedEntries.vocals) response.vocals = cachedEntries.vocals;
       if (cachedEntries.instrumental) response.instrumental = cachedEntries.instrumental;
       res.json(response);
+      // Clean up temp file if it exists
+      if (tempRegionFile && existsSync(tempRegionFile)) {
+        try { unlinkSync(tempRegionFile); } catch (e) { /* ignore */ }
+      }
       return;
     }
 
-    console.log(`[Training] Separating stems: ${resolvedAudio} (backend: ${safeBackend}, quality: ${safeQuality}, stems: ${safeStems}${model ? ', model: ' + model : ''})`);
+    console.log(`[Training] Separating stems: ${audioToProcess} (backend: ${safeBackend}, quality: ${safeQuality}, stems: ${safeStems}${model ? ', model: ' + model : ''})`);
 
     const pyArgs = [
       scriptPath,
-      '--audio', resolvedAudio,
+      '--audio', audioToProcess,
       '--output', stemsDir,
       '--backend', safeBackend,
       '--quality', safeQuality,
@@ -1455,6 +1517,10 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
       if (code !== 0) {
         console.error(`[Training] Separator exited with code ${code}:`, stderr);
         res.status(500).json({ error: `Separation failed (exit code ${code})`, details: stderr.slice(-500) });
+        // Clean up temp file on error
+        if (tempRegionFile && existsSync(tempRegionFile)) {
+          try { unlinkSync(tempRegionFile); } catch (e) { /* ignore */ }
+        }
         return;
       }
 
@@ -1466,6 +1532,10 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
 
         if (!result.success) {
           res.status(500).json({ error: result.error || 'Separation failed' });
+          // Clean up temp file on error
+          if (tempRegionFile && existsSync(tempRegionFile)) {
+            try { unlinkSync(tempRegionFile); } catch (e) { /* ignore */ }
+          }
           return;
         }
 
@@ -1496,15 +1566,33 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
         if (stemEntries.instrumental) response.instrumental = stemEntries.instrumental;
 
         res.json(response);
+        
+        // Clean up temp file if it exists
+        if (tempRegionFile && existsSync(tempRegionFile)) {
+          try { 
+            unlinkSync(tempRegionFile);
+            console.log(`[Training] Cleaned up temp region file: ${tempRegionFile}`);
+          } catch (e) { 
+            console.error(`[Training] Failed to clean up temp file:`, e);
+          }
+        }
       } catch (parseErr) {
         console.error('[Training] Failed to parse separator output:', stdout);
         res.status(500).json({ error: 'Failed to parse separation result' });
+        // Clean up temp file on error
+        if (tempRegionFile && existsSync(tempRegionFile)) {
+          try { unlinkSync(tempRegionFile); } catch (e) { /* ignore */ }
+        }
       }
     });
 
     child.on('error', (err: Error) => {
       console.error('[Training] Failed to spawn separator:', err);
       res.status(500).json({ error: `Failed to start separator: ${err.message}` });
+      // Clean up temp file on error
+      if (tempRegionFile && existsSync(tempRegionFile)) {
+        try { unlinkSync(tempRegionFile); } catch (e) { /* ignore */ }
+      }
     });
 
   } catch (error) {

@@ -186,6 +186,8 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
   const regionContainerRef = useRef<HTMLDivElement>(null);
   const [isDraggingStart, setIsDraggingStart] = useState(false);
   const [isDraggingEnd, setIsDraggingEnd] = useState(false);
+  const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+  const [isLoadingWaveform, setIsLoadingWaveform] = useState(false);
 
   // Processing hook
   const { processing: globalProcessing, startProcessing, completeProcessing } = useStemProcessing();
@@ -367,6 +369,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
         model,
         quality: backend === 'demucs' ? quality : 'alta',
         stems: stemCount,
+        ...(useRegion ? { regionStart, regionEnd } : {}),
       }, token);
 
       clearInterval(progressInterval);
@@ -447,25 +450,51 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, w, h);
 
-    // Draw simple waveform bars
-    const barCount = 100;
-    const barWidth = w / barCount;
     const midY = h / 2;
     const maxHeight = h * 0.4;
 
-    for (let i = 0; i < barCount; i++) {
-      const x = i * barWidth;
-      // Pseudo-random height based on position
-      const seed = (i * 1103515245 + 12345) >>> 0;
-      const height = maxHeight * (0.3 + 0.7 * ((seed >> 16) & 0x7fff) / 0x7fff);
+    // Draw waveform from real audio buffer if available
+    if (audioBuffer) {
+      const channelData = audioBuffer.getChannelData(0); // Use first channel (mono or left channel)
+      const samplesPerPixel = Math.floor(channelData.length / w);
       
-      const pct = i / barCount;
-      const time = pct * previewAudioDuration;
-      const inRegion = time >= regionStart && time <= regionEnd;
+      for (let x = 0; x < w; x++) {
+        const start = Math.floor(x * samplesPerPixel);
+        const end = Math.floor(start + samplesPerPixel);
+        
+        // Calculate RMS (root mean square) for this pixel
+        let sum = 0;
+        for (let i = start; i < end && i < channelData.length; i++) {
+          sum += channelData[i] * channelData[i];
+        }
+        const rms = Math.sqrt(sum / (end - start));
+        const height = Math.min(maxHeight, rms * maxHeight * 3); // Scale for visibility
+        
+        const time = (x / w) * previewAudioDuration;
+        const inRegion = time >= regionStart && time <= regionEnd;
 
-      ctx.fillStyle = inRegion ? handleColor : waveColor;
-      ctx.fillRect(x, midY - height, Math.max(1, barWidth - 1), height);
-      ctx.fillRect(x, midY, Math.max(1, barWidth - 1), height);
+        ctx.fillStyle = inRegion ? handleColor : waveColor;
+        ctx.fillRect(x, midY - height, 1, height);
+        ctx.fillRect(x, midY, 1, height);
+      }
+    } else {
+      // Fallback: pseudo-random bars while loading
+      const barCount = 100;
+      const barWidth = w / barCount;
+
+      for (let i = 0; i < barCount; i++) {
+        const x = i * barWidth;
+        const seed = (i * 1103515245 + 12345) >>> 0;
+        const height = maxHeight * (0.3 + 0.7 * ((seed >> 16) & 0x7fff) / 0x7fff);
+        
+        const pct = i / barCount;
+        const time = pct * previewAudioDuration;
+        const inRegion = time >= regionStart && time <= regionEnd;
+
+        ctx.fillStyle = inRegion ? handleColor : waveColor;
+        ctx.fillRect(x, midY - height, Math.max(1, barWidth - 1), height);
+        ctx.fillRect(x, midY, Math.max(1, barWidth - 1), height);
+      }
     }
 
     // Region overlay
@@ -496,7 +525,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
       ctx.lineTo(currentX, h);
       ctx.stroke();
     }
-  }, [useRegion, previewAudioDuration, regionStart, regionEnd, isPlaying]);
+  }, [useRegion, previewAudioDuration, regionStart, regionEnd, isPlaying, audioBuffer]);
 
   // Update waveform when preview audio is loaded
   useEffect(() => {
@@ -517,6 +546,32 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     audio.addEventListener('loadedmetadata', onLoadedMetadata);
     return () => audio.removeEventListener('loadedmetadata', onLoadedMetadata);
   }, [song?.audioUrl, regionEnd]);
+
+  // Decode audio for real waveform when region mode is activated
+  useEffect(() => {
+    if (!useRegion || !song?.audioUrl || audioBuffer) return;
+
+    setIsLoadingWaveform(true);
+    
+    const decodeAudio = async () => {
+      try {
+        if (!song.audioUrl) return; // Type guard
+        
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const response = await fetch(song.audioUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const decodedBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        setAudioBuffer(decodedBuffer);
+        await audioContext.close();
+      } catch (error) {
+        console.error('Error decoding audio:', error);
+      } finally {
+        setIsLoadingWaveform(false);
+      }
+    };
+
+    decodeAudio();
+  }, [useRegion, song?.audioUrl, audioBuffer]);
 
   // Redraw waveform when needed
   useEffect(() => {
@@ -901,10 +956,21 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
                         className="w-full h-20 cursor-crosshair"
                         style={{ display: 'block' }}
                       />
+                      
+                      {/* Loading overlay */}
+                      {isLoadingWaveform && (
+                        <div className="absolute inset-0 bg-surface-50/80 backdrop-blur-sm flex items-center justify-center">
+                          <div className="flex items-center gap-2 text-purple-600 dark:text-purple-300">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span className="text-xs font-medium">Cargando waveform...</span>
+                          </div>
+                        </div>
+                      )}
+                      
                       <div className="absolute top-1 right-1 flex items-center gap-1">
                         <button
                           onClick={(e) => { e.stopPropagation(); handlePlayPause(); }}
-                          disabled={processing}
+                          disabled={processing || isLoadingWaveform}
                           className="p-1 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 transition-colors disabled:opacity-50"
                           title={isPlaying ? 'Pausar preview' : 'Reproducir región'}
                         >

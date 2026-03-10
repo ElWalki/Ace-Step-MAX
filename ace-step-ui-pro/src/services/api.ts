@@ -162,7 +162,7 @@ export const generateApi = {
     api<{ success: boolean }>('/api/lora/open-folder', { method: 'POST', body: params, token }),
 
   // Stems
-  separateStems: (params: { audioUrl: string; quality?: string; backend?: string; model?: string; stems?: number }, token: string) =>
+  separateStems: (params: { audioUrl: string; quality?: string; backend?: string; model?: string; stems?: number; regionStart?: number; regionEnd?: number }, token: string) =>
     api<{ success: boolean; allStems: any[]; elapsed: number }>('/api/training/separate-stems', {
       method: 'POST',
       body: {
@@ -171,6 +171,8 @@ export const generateApi = {
         backend: params.backend,
         model: params.model,
         stems: params.stems,
+        regionStart: params.regionStart,
+        regionEnd: params.regionEnd,
       },
       token,
     }),
