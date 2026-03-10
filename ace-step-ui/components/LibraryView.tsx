@@ -6,6 +6,7 @@ import { SongDropdownMenu } from './SongDropdownMenu';
 import { ShareModal } from './ShareModal';
 import { AlbumCover } from './AlbumCover';
 import { GenerationConfigModal } from './GenerationConfigModal';
+import { StemSeparationModal } from './StemSeparationModal';
 import { useI18n } from '../context/I18nContext';
 
 interface LibraryViewProps {
@@ -54,6 +55,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     const [shareModalOpen, setShareModalOpen] = useState(false);
     const [shareSong, setShareSong] = useState<Song | null>(null);
     const [configSong, setConfigSong] = useState<Song | null>(null);
+    const [stemSong, setStemSong] = useState<Song | null>(null);
     const [visibleAllCount, setVisibleAllCount] = useState(15);
     const [visibleLikedCount, setVisibleLikedCount] = useState(15);
     const allSentinelRef = useRef<HTMLDivElement>(null);
@@ -197,6 +199,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                             setShareModalOpen(true);
                                         }}
                                         onViewConfig={() => setConfigSong(song)}
+                                        onExtractStems={() => setStemSong(song)}
                                     />
                                 </div>
                             </div>
@@ -272,6 +275,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                                             setShareModalOpen(true);
                                         }}
                                         onViewConfig={() => setConfigSong(song)}
+                                        onExtractStems={() => setStemSong(song)}
                                     />
                                 </div>
                             </div>
@@ -344,6 +348,13 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 token={token}
                 isOpen={!!configSong}
                 onClose={() => setConfigSong(null)}
+            />
+        )}
+        {stemSong && (
+            <StemSeparationModal
+                isOpen={!!stemSong}
+                onClose={() => setStemSong(null)}
+                song={stemSong}
             />
         )}
         </>

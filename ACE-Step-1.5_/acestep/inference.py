@@ -8,7 +8,6 @@ backward-compatible Gradio UI support.
 
 import math
 import os
-import tempfile
 from typing import Optional, Union, List, Dict, Any, Tuple
 from dataclasses import dataclass, field, asdict
 from loguru import logger
@@ -262,7 +261,7 @@ def _update_metadata_from_lm(
     vocal_language: str,
     caption: str,
     lyrics: str,
-) -> Tuple[Optional[int], str, str, Optional[float]]:
+) -> Tuple[Optional[int], str, str, Optional[float], str, str, str]:
     """Update metadata fields from LM output if not provided by user."""
 
     if bpm is None and metadata.get('bpm'):
@@ -765,8 +764,6 @@ def generate_music(
 
         if lm_status:
             status_message = "\n".join(lm_status) + "\n" + status_message
-        else:
-            status_message = status_message
         # Create and return GenerationResult
         return GenerationResult(
             audios=audios,

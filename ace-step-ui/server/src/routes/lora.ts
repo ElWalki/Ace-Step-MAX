@@ -204,6 +204,20 @@ function readJsonSafe(filePath: string): Record<string, unknown> | null {
 }
 
 /**
+ * Normalize base_model_name_or_path to a short label: 'turbo', 'sft', or 'base'.
+ */
+function normalizeBaseModel(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || !raw) return undefined;
+  const lower = raw.toLowerCase();
+  if (lower.includes('turbo')) return 'turbo';
+  if (lower.includes('sft')) return 'sft';
+  if (lower.includes('base')) return 'base';
+  // Fallback: last path segment
+  const seg = raw.split(/[\\/]/).filter(Boolean).pop();
+  return seg || undefined;
+}
+
+/**
  * Check if a directory contains a PEFT adapter (adapter_config.json).
  */
 function isAdapterDir(dir: string): boolean {
@@ -233,7 +247,7 @@ function scanLibrary(libraryDir: string): LoraEntry[] {
         sourceDir: path.basename(libraryDir),
         variants: [{ label: 'final', path: full }],
         metadata: metadata ?? undefined,
-        baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
+        baseModel: normalizeBaseModel(adapterCfg?.base_model_name_or_path),
       });
       continue;
     }
@@ -339,7 +353,7 @@ function scanOutputDir(outputDir: string, sourceDir?: string): LoraEntry[] {
       sourceDir: dirName,
       variants,
       metadata: metadata ?? undefined,
-      baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
+      baseModel: normalizeBaseModel(adapterCfg?.base_model_name_or_path),
     });
   }
 
@@ -411,7 +425,7 @@ router.post('/list', authMiddleware, async (req: AuthenticatedRequest, res: Resp
           sourceDir: path.basename(path.dirname(customDir)),
           variants: [{ label: 'final', path: customDir }],
           metadata: metadata ?? undefined,
-          baseModel: adapterCfg?.base_model_name_or_path as string | undefined,
+          baseModel: normalizeBaseModel(adapterCfg?.base_model_name_or_path),
         });
       } else {
         // Case 2: Directory CONTAINS LoRA folders - scan as library-style

@@ -5,6 +5,15 @@ import type { Song } from '../../types';
 import SongContextMenu from '../ui/SongContextMenu';
 import { getCoverStyle } from '../../utils/coverArt';
 
+/** Extract 'turbo' | 'sft' | 'base' from a model path */
+function normalizeModel(raw?: string): string {
+  if (!raw) return '';
+  const l = raw.toLowerCase();
+  if (l.includes('turbo')) return 'turbo';
+  if (l.includes('sft')) return 'sft';
+  return 'base';
+}
+
 interface SongCardProps {
   song: Song;
   isPlaying: boolean;
@@ -228,7 +237,8 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
 
   const creatorName = song.creator || song.userId || 'User';
   const creatorInitial = creatorName.charAt(0).toUpperCase();
-  const ditLabel = song.ditModel || song.generationParams?.ditModel;
+  const ditRaw = song.ditModel || song.generationParams?.ditModel;
+  const ditLabel = normalizeModel(ditRaw);
   const loraName = song.generationParams?.loraName;
   const loraScale = song.generationParams?.loraScale;
   const seed = song.generationParams?.seed;
@@ -305,7 +315,7 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
               </span>
             )}
             {ditLabel && (
-              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gradient-to-r from-violet-500/25 to-accent-500/25 text-violet-300 font-bold shrink-0 leading-none border border-violet-500/30 tracking-wide uppercase">
+              <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-gradient-to-r from-violet-500/25 to-accent-500/25 text-violet-300 font-bold shrink-0 leading-none border border-violet-500/30 tracking-wide uppercase" title={ditRaw}>
                 {ditLabel}
               </span>
             )}

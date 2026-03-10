@@ -53,6 +53,37 @@ const loadFavs = (): Set<string> => {
 };
 const saveFavs = (s: Set<string>) => localStorage.setItem(LS_FAVS, JSON.stringify([...s]));
 
+/**
+ * Clean a LoRA folder name for display:
+ *  - Strip 'lora_' prefix
+ *  - Strip 'lora_output_' prefix
+ *  - Strip base-model slug (e.g. 'acestep-v15-turbo_')
+ *  - Format trailing timestamp YYYYMMDD_HHMM → readable date
+ */
+function formatLoraName(raw: string): string {
+  let n = raw;
+  // Strip common prefixes
+  n = n.replace(/^lora_output_/i, '').replace(/^lora_/i, '');
+  // Strip base model slug
+  n = n.replace(/acestep-v1\.?5?-(turbo|sft|base)_?/i, '');
+  // Format trailing timestamp: _YYYYMMDD_HHMM or standalone YYYYMMDD_HHMM
+  n = n.replace(/^_?(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})$/, (_, y, m, d, hh, mm) =>
+    `${d}/${m}/${y} ${hh}:${mm}`);
+  n = n.replace(/_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})$/, (_, y, m, d, hh, mm) =>
+    ` · ${d}/${m}/${y} ${hh}:${mm}`);
+  // Clean up leading/trailing underscores and whitespace
+  n = n.replace(/^[_\s]+|[_\s]+$/g, '').replace(/_/g, ' ');
+  return n || raw;
+}
+
+/** Count how many epoch checkpoints a LoRA has */
+function epochInfo(variants: LoraVariant[]): string | null {
+  const epochs = variants.filter(v => v.epoch !== undefined && v.epoch >= 0);
+  if (epochs.length === 0) return null;
+  const max = Math.max(...epochs.map(v => v.epoch!));
+  return `${epochs.length} checkpoints · ${max} epochs`;
+}
+
 export default function LoraManager({
   isOpen, onClose, token,
   loraLoaded, loraEnabled, loraScale, loraPath,
@@ -99,6 +130,8 @@ export default function LoraManager({
     const q = search.toLowerCase();
     const list = q ? loraList.filter(l =>
       l.name.toLowerCase().includes(q) || l.sourceDir.toLowerCase().includes(q)
+      || formatLoraName(l.name).toLowerCase().includes(q)
+      || (l.baseModel && l.baseModel.toLowerCase().includes(q))
     ) : loraList;
 
     // Sort entries: favorites first, then alphabetically
@@ -402,15 +435,17 @@ export default function LoraManager({
                       <Folder className={`w-4 h-4 shrink-0 ${
                         active ? 'text-accent-400' : 'text-surface-400'
                       }`} />
-                      <div className="flex-1 min-w-0">
+                      <div className="flex-1 min-w-0" title={lora.name}>
                         <span className={`text-xs font-medium truncate block ${
                           active ? 'text-accent-400' : 'text-surface-800'
                         }`}>
-                          {lora.name}
+                          {formatLoraName(lora.name)}
                         </span>
-                        {lora.metadata?.description && (
-                          <span className="text-[10px] text-surface-400 truncate block">{lora.metadata.description}</span>
-                        )}
+                        {lora.metadata?.description ? (
+                          <span className="text-[10px] text-surface-400 truncate block">{lora.metadata.description as string}</span>
+                        ) : epochInfo(lora.variants) ? (
+                          <span className="text-[10px] text-surface-400 truncate block">{epochInfo(lora.variants)}</span>
+                        ) : null}
                       </div>
                       {lora.variants.length > 1 && (
                         <span className="text-[9px] text-surface-400 shrink-0">
@@ -499,7 +534,7 @@ export default function LoraManager({
                     <span className={`text-xs font-semibold flex-1 truncate ${
                       groupHasActive ? 'text-accent-400' : 'text-surface-800'
                     }`}>
-                      {group.sourceDir}
+                      {formatLoraName(group.sourceDir)}
                     </span>
                     <span className="text-[9px] text-surface-400 shrink-0">
                       {group.entries.length} {group.entries.length === 1 ? 'LoRA' : 'LoRAs'}
@@ -528,12 +563,15 @@ export default function LoraManager({
                               <Folder className={`w-3.5 h-3.5 shrink-0 ${
                                 active ? 'text-accent-400' : 'text-surface-400'
                               }`} />
-                              <div className="flex-1 min-w-0">
+                              <div className="flex-1 min-w-0" title={lora.name}>
                                 <span className={`text-xs font-medium truncate block ${
                                   active ? 'text-accent-400' : 'text-surface-800'
                                 }`}>
-                                  {lora.name}
+                                  {formatLoraName(lora.name)}
                                 </span>
+                                {epochInfo(lora.variants) && (
+                                  <span className="text-[10px] text-surface-400 truncate block">{epochInfo(lora.variants)}</span>
+                                )}
                               </div>
                               {lora.variants.length > 1 && (
                                 <span className="text-[9px] text-surface-400 shrink-0">

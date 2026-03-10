@@ -357,6 +357,17 @@ export default function App() {
           showToast(t('common.promptReused', 'Prompt loaded into creator'), 'success');
         }
         break;
+      case 'reuseLyrics':
+        // Copy only lyrics back to create panel
+        {
+          const lyrics = song.lyrics || song.generationParams?.lyrics;
+          if (lyrics) {
+            setReuseParams({ lyrics, customMode: true } as GenerationParams);
+            setCurrentView('create');
+            showToast(t('common.lyricsReused', 'Lyrics loaded into creator'), 'success');
+          }
+        }
+        break;
       case 'useAsReference':
         // Set song audio as reference in create panel
         if (song.audioUrl) {

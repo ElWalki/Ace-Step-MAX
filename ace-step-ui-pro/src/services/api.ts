@@ -22,11 +22,39 @@ export function getAudioUrl(audioUrl: string | undefined | null): string | undef
   return audioUrl;
 }
 
+function mapSong(s: any): any {
+  const rawUrl = s.audio_url || s.audioUrl;
+  const audioUrl = getAudioUrl(rawUrl);
+
+  // Parse generation_params JSON string from backend
+  let generationParams: any;
+  try {
+    if (s.generation_params) {
+      generationParams = typeof s.generation_params === 'string'
+        ? JSON.parse(s.generation_params)
+        : s.generation_params;
+    } else if (s.generationParams) {
+      generationParams = s.generationParams;
+    }
+  } catch { /* ignore parse errors */ }
+
+  return {
+    ...s,
+    audio_url: audioUrl,
+    audioUrl,
+    coverUrl: s.cover_url || s.coverUrl,
+    createdAt: s.created_at || s.createdAt,
+    isPublic: s.is_public ?? s.isPublic,
+    likeCount: s.like_count ?? s.likeCount ?? 0,
+    viewCount: s.view_count ?? s.viewCount ?? 0,
+    userId: s.user_id || s.userId,
+    ditModel: generationParams?.ditModel || s.ditModel,
+    generationParams,
+  };
+}
+
 function transformSongs(songs: any[]): any[] {
-  return songs.map(s => {
-    const rawUrl = s.audio_url || s.audioUrl;
-    return { ...s, audio_url: getAudioUrl(rawUrl), audioUrl: getAudioUrl(rawUrl) };
-  });
+  return songs.map(mapSong);
 }
 
 export const songsApi = {
@@ -36,9 +64,7 @@ export const songsApi = {
   },
   getSong: async (id: string, token?: string | null) => {
     const r = await api<{ song: any }>(`/api/songs/${id}`, { token: token || undefined });
-    const s = r.song;
-    const u = getAudioUrl(s.audio_url || s.audioUrl);
-    return { song: { ...s, audio_url: u, audioUrl: u } };
+    return { song: mapSong(r.song) };
   },
   deleteSong: (id: string, token: string) =>
     api<{ success: boolean }>(`/api/songs/${id}`, { method: 'DELETE', token }),
@@ -146,6 +172,16 @@ export const generateApi = {
         model: params.model,
         stems: params.stems,
       },
+      token,
+    }),
+
+  // Separator dependency management
+  separatorDeps: (token: string) =>
+    api<{ demucs: boolean; audioSeparator: boolean }>('/api/training/separator-deps', { token }),
+  installSeparatorDep: (pkg: 'demucs' | 'audio-separator', token: string) =>
+    api<{ success: boolean; error?: string }>('/api/training/separator-deps/install', {
+      method: 'POST',
+      body: { pkg },
       token,
     }),
 };

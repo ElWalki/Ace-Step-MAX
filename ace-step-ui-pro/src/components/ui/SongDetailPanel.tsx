@@ -3,9 +3,19 @@ import { useTranslation } from 'react-i18next';
 import {
   X, Copy, Download, Share2, Music, Clock, Tag,
   Heart, Cpu, FileText, ChevronDown, ChevronUp, CheckCheck,
+  Calendar, User,
 } from 'lucide-react';
 import type { Song } from '../../types';
 import { getCoverStyle } from '../../utils/coverArt';
+
+/** Extract 'turbo' | 'sft' | 'base' from a model path */
+function normalizeModel(raw?: string): string {
+  if (!raw) return '';
+  const l = raw.toLowerCase();
+  if (l.includes('turbo')) return 'turbo';
+  if (l.includes('sft')) return 'sft';
+  return 'base';
+}
 
 interface SongDetailPanelProps {
   song: Song | null;
@@ -154,6 +164,27 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
           </div>
         )}
 
+        {/* Song info */}
+        <div className="mx-4 mt-4 space-y-1">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-surface-500 flex items-center gap-1">
+            <Calendar className="w-3 h-3" /> {t('meta.info', 'Info')}
+          </span>
+          <div className="rounded-lg border border-surface-200 divide-y divide-surface-200 overflow-hidden text-xs">
+            {song.createdAt && (
+              <div className="flex justify-between px-2.5 py-1.5">
+                <span className="text-surface-500">{t('meta.date', 'Date')}</span>
+                <span className="text-surface-800 font-medium">{new Date(song.createdAt).toLocaleString()}</span>
+              </div>
+            )}
+            {song.creator && (
+              <div className="flex justify-between px-2.5 py-1.5">
+                <span className="text-surface-500">{t('meta.creator', 'Creator')}</span>
+                <span className="text-surface-800 font-medium">{song.creator}</span>
+              </div>
+            )}
+          </div>
+        </div>
+
         {/* Generation info */}
         {gp && (
           <div className="mx-4 mt-4 mb-4 space-y-1">
@@ -164,7 +195,25 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
               {gp.ditModel && (
                 <div className="flex justify-between px-2.5 py-1.5">
                   <span className="text-surface-500">{t('meta.model', 'Model')}</span>
-                  <span className="text-surface-800 font-medium truncate ml-2 max-w-[140px]">{gp.ditModel}</span>
+                  <span className="text-surface-800 font-medium truncate ml-2 max-w-[140px] uppercase" title={gp.ditModel}>{normalizeModel(gp.ditModel)}</span>
+                </div>
+              )}
+              {gp.seed !== undefined && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.seed', 'Seed')}</span>
+                  <button
+                    className="text-surface-800 font-medium font-mono hover:text-accent-500 transition-colors cursor-pointer"
+                    onClick={() => copyText(String(gp.seed), 'seed')}
+                    title={t('detail.copy', 'Copy')}
+                  >
+                    {copied === 'seed' ? <CheckCheck className="w-3 h-3 text-green-400 inline" /> : gp.seed}
+                  </button>
+                </div>
+              )}
+              {gp.loraName && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.lora', 'LoRA')}</span>
+                  <span className="text-surface-800 font-medium truncate ml-2 max-w-[140px]" title={gp.loraPath || gp.loraName}>{gp.loraName}{gp.loraScale != null ? ` (${gp.loraScale})` : ''}</span>
                 </div>
               )}
               {gp.bpm > 0 && (
@@ -179,20 +228,6 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
                   <span className="text-surface-800 font-medium">{gp.keyScale}</span>
                 </div>
               )}
-              <div className="flex justify-between px-2.5 py-1.5">
-                <span className="text-surface-500">{t('meta.steps', 'Steps')}</span>
-                <span className="text-surface-800 font-medium">{gp.inferenceSteps}</span>
-              </div>
-              <div className="flex justify-between px-2.5 py-1.5">
-                <span className="text-surface-500">{t('meta.guidance', 'Guidance')}</span>
-                <span className="text-surface-800 font-medium">{gp.guidanceScale}</span>
-              </div>
-              {gp.seed !== undefined && !gp.randomSeed && (
-                <div className="flex justify-between px-2.5 py-1.5">
-                  <span className="text-surface-500">{t('meta.seed', 'Seed')}</span>
-                  <span className="text-surface-800 font-medium font-mono">{gp.seed}</span>
-                </div>
-              )}
               {gp.duration != null && gp.duration > 0 && (
                 <div className="flex justify-between px-2.5 py-1.5">
                   <span className="text-surface-500">{t('meta.duration', 'Duration')}</span>
@@ -203,6 +238,26 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
                 <div className="flex justify-between px-2.5 py-1.5">
                   <span className="text-surface-500">{t('meta.timeSignature', 'Time Sig')}</span>
                   <span className="text-surface-800 font-medium">{gp.timeSignature}</span>
+                </div>
+              )}
+              {gp.inferMethod && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.inferMethod', 'Method')}</span>
+                  <span className="text-surface-800 font-medium uppercase">{gp.inferMethod}</span>
+                </div>
+              )}
+              <div className="flex justify-between px-2.5 py-1.5">
+                <span className="text-surface-500">{t('meta.steps', 'Steps')}</span>
+                <span className="text-surface-800 font-medium">{gp.inferenceSteps}</span>
+              </div>
+              <div className="flex justify-between px-2.5 py-1.5">
+                <span className="text-surface-500">{t('meta.guidance', 'Guidance')}</span>
+                <span className="text-surface-800 font-medium">{gp.guidanceScale}</span>
+              </div>
+              {gp.shift != null && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.shift', 'Shift')}</span>
+                  <span className="text-surface-800 font-medium">{gp.shift}</span>
                 </div>
               )}
               {gp.audioFormat && (
@@ -217,22 +272,16 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
                   <span className="text-surface-800 font-medium">{gp.instrumental ? 'Yes' : 'No'}</span>
                 </div>
               )}
+              {gp.vocalLanguage && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.vocalLanguage', 'Vocal Lang')}</span>
+                  <span className="text-surface-800 font-medium">{gp.vocalLanguage}</span>
+                </div>
+              )}
               {gp.singer && (
                 <div className="flex justify-between px-2.5 py-1.5">
                   <span className="text-surface-500">{t('meta.singer', 'Singer')}</span>
                   <span className="text-surface-800 font-medium truncate ml-2 max-w-[140px]">{gp.singer}</span>
-                </div>
-              )}
-              {gp.inferMethod && (
-                <div className="flex justify-between px-2.5 py-1.5">
-                  <span className="text-surface-500">{t('meta.inferMethod', 'Method')}</span>
-                  <span className="text-surface-800 font-medium uppercase">{gp.inferMethod}</span>
-                </div>
-              )}
-              {gp.shift != null && (
-                <div className="flex justify-between px-2.5 py-1.5">
-                  <span className="text-surface-500">{t('meta.shift', 'Shift')}</span>
-                  <span className="text-surface-800 font-medium">{gp.shift}</span>
                 </div>
               )}
               {gp.lmBackend && (
@@ -253,10 +302,22 @@ export default function SongDetailPanel({ song, onClose, onPlay, onDownload, onL
                   <span className="text-surface-800 font-medium">{gp.lmCfgScale}</span>
                 </div>
               )}
-              {gp.loraName && (
+              {gp.lmTopK != null && (
                 <div className="flex justify-between px-2.5 py-1.5">
-                  <span className="text-surface-500">{t('meta.lora', 'LoRA')}</span>
-                  <span className="text-surface-800 font-medium truncate ml-2 max-w-[140px]">{gp.loraName}{gp.loraScale != null ? ` (${gp.loraScale})` : ''}</span>
+                  <span className="text-surface-500">LM Top-K</span>
+                  <span className="text-surface-800 font-medium">{gp.lmTopK}</span>
+                </div>
+              )}
+              {gp.lmTopP != null && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">LM Top-P</span>
+                  <span className="text-surface-800 font-medium">{gp.lmTopP}</span>
+                </div>
+              )}
+              {gp.thinking !== undefined && (
+                <div className="flex justify-between px-2.5 py-1.5">
+                  <span className="text-surface-500">{t('meta.thinking', 'Thinking')}</span>
+                  <span className="text-surface-800 font-medium">{gp.thinking ? 'On' : 'Off'}</span>
                 </div>
               )}
             </div>

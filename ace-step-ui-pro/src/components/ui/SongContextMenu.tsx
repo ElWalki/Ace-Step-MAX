@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Download, Trash2, ListPlus, Share2, Pencil, Music2,
   Copy, FileAudio, Video, Scissors, RefreshCw, Dumbbell,
-  Settings2,
+  Settings2, FileText,
 } from 'lucide-react';
 
 export interface SongMenuAction {
@@ -60,6 +60,7 @@ export default function SongContextMenu({ x, y, onClose, onAction, isOwner = tru
     { key: 'play', icon: <Music2 className="w-4 h-4" />, label: t('common.play') },
     { key: 'addToPlaylist', icon: <ListPlus className="w-4 h-4" />, label: t('common.addToWorkspace'), divider: true },
     { key: 'reusePrompt', icon: <RefreshCw className="w-4 h-4" />, label: t('common.reusePrompt') },
+    { key: 'reuseLyrics', icon: <FileText className="w-4 h-4" />, label: t('common.reuseLyrics', 'Reuse Lyrics') },
     { key: 'useAsReference', icon: <FileAudio className="w-4 h-4" />, label: t('common.useAsReference'), hidden: !hasAudioUrl },
     { key: 'cover', icon: <Copy className="w-4 h-4" />, label: t('common.coverSong'), hidden: !hasAudioUrl },
     { key: 'extractStems', icon: <Scissors className="w-4 h-4" />, label: t('common.extractStems'), hidden: !hasAudioUrl, divider: true },

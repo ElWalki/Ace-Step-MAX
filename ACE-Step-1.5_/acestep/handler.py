@@ -8,13 +8,9 @@ import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import math
-from copy import deepcopy
-import tempfile
 import traceback
 import re
 import random
-import uuid
-import hashlib
 import json
 from contextlib import contextmanager
 from typing import Optional, Dict, Any, Tuple, List, Union
@@ -27,8 +23,7 @@ from tqdm import tqdm
 from loguru import logger
 import warnings
 
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
-from transformers.generation.streamers import BaseStreamer
+from transformers import AutoTokenizer, AutoModel
 from diffusers.models import AutoencoderOobleck
 from acestep.model_downloader import (
     ensure_main_model,
@@ -92,7 +87,7 @@ class AceStepHandler:
         self._current_lora_path = None  # Path to the currently loaded LoRA
         self._current_lora_metadata = {}  # Metadata of the currently loaded LoRA
     
-    def get_available_checkpoints(self) -> str:
+    def get_available_checkpoints(self) -> List[str]:
         """Return project root directory path"""
         # Get project root (handler.py is in acestep/, so go up two levels to project root)
         project_root = self._get_project_root()
@@ -252,7 +247,7 @@ class AceStepHandler:
                 return f"❌ Invalid LoRA adapter: adapter_config.json not found in {lora_path} (also searched subdirectories)"
         
         try:
-            from peft import PeftModel, PeftConfig
+            from peft import PeftModel
         except ImportError:
             return "❌ PEFT library not installed. Please install with: pip install peft"
         
@@ -1681,7 +1676,6 @@ class AceStepHandler:
                 if audio_duration is not None and float(audio_duration) > 0:
                     batch_target_wavs = self.create_target_wavs(float(audio_duration))
                 else:
-                    import random
                     random_duration = random.uniform(10.0, 120.0)
                     batch_target_wavs = self.create_target_wavs(random_duration)
             target_wavs_batch.append(batch_target_wavs)
@@ -2159,8 +2153,8 @@ class AceStepHandler:
         for k, v in batch.items():
             if isinstance(v, torch.Tensor):
                 batch[k] = v.to(self.device)
-                if torch.is_floating_point(v):
-                    batch[k] = v.to(self.dtype)
+                if torch.is_floating_point(batch[k]):
+                    batch[k] = batch[k].to(self.dtype)
         return batch
     
     def infer_refer_latent(self, refer_audioss):
@@ -2407,7 +2401,6 @@ class AceStepHandler:
             # Ensure we have enough seeds for batch size
             if len(seed_list) < batch_size:
                 # Pad with last seed or random seeds
-                import random
                 while len(seed_list) < batch_size:
                     seed_list.append(random.randint(0, 2**32 - 1))
             elif len(seed_list) > batch_size:
@@ -3236,8 +3229,6 @@ class AceStepHandler:
             - success: Whether generation succeeded
             - error: Error message if failed
         """
-        from transformers.cache_utils import EncoderDecoderCache, DynamicCache
-        
         if self.model is None:
             return {
                 "lrc_text": "",
@@ -3450,8 +3441,6 @@ class AceStepHandler:
             - success: Whether generation succeeded
             - error: Error message if failed
         """
-        from transformers.cache_utils import EncoderDecoderCache, DynamicCache
-
         if self.model is None:
             return {
                 "lm_score": 0.0,
