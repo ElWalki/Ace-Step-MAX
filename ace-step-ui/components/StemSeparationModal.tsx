@@ -8,11 +8,11 @@ import { Song } from '../types';
 
 // UVR models (must match separate_audio.py)
 const UVR_MODELS = [
-  { name: 'UVR-MDX-NET-Inst_HQ_3', description: 'MDX-Net Inst HQ 3 — best overall' },
-  { name: 'UVR-MDX-NET-Voc_FT', description: 'MDX-Net Vocal FT — vocal-focused' },
-  { name: 'UVR_MDXNET_KARA_2', description: 'MDX-Net Karaoke 2' },
-  { name: 'Kim_Vocal_2', description: 'Kim Vocal 2 — popular vocal extraction' },
-  { name: 'UVR-MDX-NET-Inst_3', description: 'MDX-Net Inst 3 — clean instrumental' },
+  { name: 'UVR-MDX-NET-Inst_HQ_3.onnx', description: 'MDX-Net Inst HQ 3 — best overall' },
+  { name: 'UVR-MDX-NET-Voc_FT.onnx', description: 'MDX-Net Vocal FT — vocal-focused' },
+  { name: 'UVR_MDXNET_KARA_2.onnx', description: 'MDX-Net Karaoke 2' },
+  { name: 'Kim_Vocal_2.onnx', description: 'Kim Vocal 2 — popular vocal extraction' },
+  { name: 'UVR-MDX-NET-Inst_3.onnx', description: 'MDX-Net Inst 3 — clean instrumental' },
 ];
 
 // Demucs models (must match separate_audio.py)

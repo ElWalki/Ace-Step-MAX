@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Music, Play, Pause, Loader2, ThumbsUp, ThumbsDown, Share2, Video, ListPlus, MoreVertical, Disc3, Copy, Check } from 'lucide-react';
+import { Music, Play, Pause, Loader2, ThumbsUp, ThumbsDown, Share2, Video, ListPlus, MoreVertical, Disc3, Copy, Check, Scissors, ExternalLink } from 'lucide-react';
 import type { Song } from '../../types';
 import SongContextMenu from '../ui/SongContextMenu';
 import { getCoverStyle } from '../../utils/coverArt';
+import { useStemProcessing } from '../../hooks/useStemProcessing';
 
 /** Extract 'turbo' | 'sft' | 'base' from a model path */
 function normalizeModel(raw?: string): string {
@@ -175,6 +176,10 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
   const [editTitle, setEditTitle] = useState('');
   const [seedCopied, setSeedCopied] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
+
+  // Stem processing hook
+  const { processing: stemProcessing } = useStemProcessing();
+  const isProcessingStem = stemProcessing && (stemProcessing.songId === song.id || stemProcessing.audioUrl === song.audioUrl);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -376,6 +381,51 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
               isCurrent={isCurrent}
               audioRef={audioRef}
             />
+          )}
+
+          {/* Stem extraction progress */}
+          {isProcessingStem && stemProcessing && (
+            <div className="mt-2 p-2.5 rounded-lg bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/20">
+              <div className="flex items-center gap-2 mb-1.5">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-500 shrink-0" />
+                <span className="text-xs font-medium text-purple-600 dark:text-purple-300 flex-1 truncate">
+                  Extrayendo stems...
+                </span>
+                <span className="text-xs font-bold text-purple-500 tabular-nums">
+                  {stemProcessing.progress}%
+                </span>
+              </div>
+              <div className="relative h-1.5 bg-surface-300 rounded-full overflow-hidden mb-2">
+                <div
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-purple-500 to-blue-500 transition-all duration-300"
+                  style={{ width: `${stemProcessing.progress}%` }}
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={(e) => { e.stopPropagation(); onMenuAction?.('extractStems'); }}
+                  className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 text-[10px] font-medium transition-colors border border-purple-500/30"
+                  title="Ver proceso en modal"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  Ver proceso
+                </button>
+                {stemProcessing.progress >= 95 && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onMenuAction?.('viewStems'); }}
+                    className="flex-1 flex items-center justify-center gap-1 px-2 py-1 rounded-md bg-green-500/20 hover:bg-green-500/30 text-green-600 dark:text-green-300 text-[10px] font-medium transition-colors border border-green-500/30"
+                    title="Ver stems completos"
+                  >
+                    <Scissors className="w-3 h-3" />
+                    Ver stems
+                  </button>
+                )}
+              </div>
+              <p className="text-[9px] text-surface-500 mt-1.5">
+                {stemProcessing.backend} · {stemProcessing.quality}
+                {stemProcessing.regionStart !== undefined && ` · ${stemProcessing.regionEnd! - stemProcessing.regionStart!}s`}
+              </p>
+            </div>
           )}
 
           {song.isGenerating && (

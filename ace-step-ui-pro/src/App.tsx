@@ -502,114 +502,118 @@ export default function App() {
     return [...generatingSongs, ...songs];
   }, [jobs, songs]);
 
-  // ─── Render views ───
-  const renderContent = () => {
-    switch (currentView) {
-      case 'create':
-        return (
-          <div className="flex-1 flex overflow-hidden">
-            <div style={{ width: panelWidth, minWidth: 320, maxWidth: 600 }} className="border-r border-surface-200 flex flex-col overflow-hidden">
-              <CreatePanel
-                onGenerate={handleGenerate}
-                isGenerating={isGenerating}
-                activeJobCount={jobs.length}
-                reuseParams={reuseParams}
-                onReuseConsumed={() => setReuseParams(null)}
-                generationProgress={jobs[0]?.progress}
-                generationStage={jobs[0]?.stage}
-              />
-            </div>
-            {/* Resizable divider */}
-            <div
-              className={`panel-divider${isDraggingPanel ? ' active' : ''}`}
-              onMouseDown={e => {
-                e.preventDefault();
-                setIsDraggingPanel(true);
-                const startX = e.clientX;
-                const startW = panelWidth;
-                const onMove = (ev: MouseEvent) => {
-                  const newW = Math.max(320, Math.min(600, startW + ev.clientX - startX));
-                  setPanelWidth(newW);
-                };
-                const onUp = () => {
-                  setIsDraggingPanel(false);
-                  document.removeEventListener('mousemove', onMove);
-                  document.removeEventListener('mouseup', onUp);
-                };
-                document.addEventListener('mousemove', onMove);
-                document.addEventListener('mouseup', onUp);
-              }}
-            />
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="px-4 py-3 border-b border-surface-200">
-                <h2 className="text-sm font-semibold text-surface-800">
-                  {t('create.results')} <span className="text-surface-500 font-normal">({displaySongs.length})</span>
-                </h2>
-              </div>
-              <ResultsPanel
-                songs={displaySongs}
-                currentSong={currentSong}
-                isPlaying={isPlaying}
-                onPlaySong={playSong}
-                onDeleteSong={deleteSong}
-                onMenuAction={handleMenuAction}
-                onSelectSong={setDetailSong}
-                onRenameSong={renameSong}
-                onLikeSong={toggleLike}
-                audioRef={audioRef}
-              />
-            </div>
-            {detailSong && (
-              <SongDetailPanel
-                song={detailSong}
-                onClose={() => setDetailSong(null)}
-                onPlay={playSong}
-                onDownload={handleDownload}
-                onLike={toggleLike}
-              />
-            )}
+  // ─── Render views — all kept mounted, hidden with CSS to preserve state ───
+  const renderContent = () => (
+    <>
+      {/* Create view */}
+      <div className="flex-1 flex overflow-hidden" style={{ display: currentView === 'create' ? 'flex' : 'none' }}>
+        <div style={{ width: panelWidth, minWidth: 320, maxWidth: 600 }} className="border-r border-surface-200 flex flex-col overflow-hidden">
+          <CreatePanel
+            onGenerate={handleGenerate}
+            isGenerating={isGenerating}
+            activeJobCount={jobs.length}
+            reuseParams={reuseParams}
+            onReuseConsumed={() => setReuseParams(null)}
+            generationProgress={jobs[0]?.progress}
+            generationStage={jobs[0]?.stage}
+          />
+        </div>
+        {/* Resizable divider */}
+        <div
+          className={`panel-divider${isDraggingPanel ? ' active' : ''}`}
+          onMouseDown={e => {
+            e.preventDefault();
+            setIsDraggingPanel(true);
+            const startX = e.clientX;
+            const startW = panelWidth;
+            const onMove = (ev: MouseEvent) => {
+              const newW = Math.max(320, Math.min(600, startW + ev.clientX - startX));
+              setPanelWidth(newW);
+            };
+            const onUp = () => {
+              setIsDraggingPanel(false);
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }}
+        />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="px-4 py-3 border-b border-surface-200">
+            <h2 className="text-sm font-semibold text-surface-800">
+              {t('create.results')} <span className="text-surface-500 font-normal">({displaySongs.length})</span>
+            </h2>
           </div>
-        );
-      case 'library':
-        return (
-          <div className="flex-1 flex overflow-hidden">
-            <LibraryView
-              songs={displaySongs}
-              currentSong={currentSong}
-              isPlaying={isPlaying}
-              onPlaySong={playSong}
-              onDeleteSong={deleteSong}
-              onMenuAction={handleMenuAction}
-              onSelectSong={setDetailSong}
-              onRenameSong={renameSong}
-              onLikeSong={toggleLike}
-              audioRef={audioRef}
-            />
-            {detailSong && (
-              <SongDetailPanel
-                song={detailSong}
-                onClose={() => setDetailSong(null)}
-                onPlay={playSong}
-                onDownload={handleDownload}
-                onLike={toggleLike}
-              />
-            )}
-          </div>
-        );
-      case 'training':
-        return <TrainingView />;
-      case 'explore':
-        return <ExploreView onSelectStyle={handleSelectStyle} />;
-      case 'gpu':
-        return <GpuMonitorView />;
-      case 'studio':
-        return <StudioView />;
-      case 'features':
-        return <FeaturesView />;
-      default:
-        return null;
-    }
-  };
+          <ResultsPanel
+            songs={displaySongs}
+            currentSong={currentSong}
+            isPlaying={isPlaying}
+            onPlaySong={playSong}
+            onDeleteSong={deleteSong}
+            onMenuAction={handleMenuAction}
+            onSelectSong={setDetailSong}
+            onRenameSong={renameSong}
+            onLikeSong={toggleLike}
+            audioRef={audioRef}
+          />
+        </div>
+        {detailSong && (
+          <SongDetailPanel
+            song={detailSong}
+            onClose={() => setDetailSong(null)}
+            onPlay={playSong}
+            onDownload={handleDownload}
+            onLike={toggleLike}
+          />
+        )}
+      </div>
+
+      {/* Library view */}
+      <div className="flex-1 flex overflow-hidden" style={{ display: currentView === 'library' ? 'flex' : 'none' }}>
+        <LibraryView
+          songs={displaySongs}
+          currentSong={currentSong}
+          isPlaying={isPlaying}
+          onPlaySong={playSong}
+          onDeleteSong={deleteSong}
+          onMenuAction={handleMenuAction}
+          onSelectSong={setDetailSong}
+          onRenameSong={renameSong}
+          onLikeSong={toggleLike}
+          audioRef={audioRef}
+        />
+        {detailSong && (
+          <SongDetailPanel
+            song={detailSong}
+            onClose={() => setDetailSong(null)}
+            onPlay={playSong}
+            onDownload={handleDownload}
+            onLike={toggleLike}
+          />
+        )}
+      </div>
+
+      {/* Training view */}
+      <div className="flex-1 flex overflow-hidden" style={{ display: currentView === 'training' ? 'flex' : 'none' }}>
+        <TrainingView />
+      </div>
+
+      {/* Explore view */}
+      <div className="flex-1 flex overflow-hidden" style={{ display: currentView === 'explore' ? 'flex' : 'none' }}>
+        <ExploreView onSelectStyle={handleSelectStyle} />
+      </div>
+
+      {/* GPU Monitor view */}
+      {currentView === 'gpu' && <GpuMonitorView />}
+
+      {/* Studio view */}
+      {currentView === 'studio' && <StudioView />}
+
+      {/* Features view */}
+      {currentView === 'features' && <FeaturesView />}
+    </>
+  );
 
   // Show login/loading screen if auth not ready (after all hooks)
   if (isLoading) {

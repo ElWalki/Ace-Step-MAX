@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback, memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Volume1,
-  Shuffle, Repeat, Repeat1, Download, Heart, ChevronUp, ChevronDown,
+  Shuffle, Repeat, Repeat1, Download, ThumbsUp, ChevronUp, ChevronDown,
   Music, Cpu, MessageSquare, Mic, Clock, Disc3,
   Share2, Scissors, Copy,
 } from 'lucide-react';
@@ -287,7 +287,7 @@ export default memo(function PlayerBar({
             <div className="flex items-center gap-0.5 flex-shrink-0">
               {onToggleLike && (
                 <ActionBtn onClick={onToggleLike} tip={t('player.like', 'Like')}>
-                  <Heart className={`w-[18px] h-[18px] ${isLiked ? 'fill-pink-500 text-pink-500' : ''}`} />
+                  <ThumbsUp className={`w-[18px] h-[18px] ${isLiked ? 'fill-pink-500 text-pink-500' : ''}`} />
                 </ActionBtn>
               )}
               <ActionBtn onClick={handleDownload} tip={t('player.download', 'Download')}>
@@ -558,7 +558,7 @@ export default memo(function PlayerBar({
                   className={`p-1.5 rounded-lg transition-all ${isLiked ? 'text-pink-500 bg-pink-500/15' : 'text-surface-400 hover:text-pink-400 hover:bg-pink-500/10'}`}
                   title={t('player.like', 'Like')}
                 >
-                  <Heart className={`w-4 h-4 ${isLiked ? 'fill-pink-500' : ''}`} />
+                  <ThumbsUp className={`w-4 h-4 ${isLiked ? 'fill-pink-500' : ''}`} />
                 </button>
               )}
 

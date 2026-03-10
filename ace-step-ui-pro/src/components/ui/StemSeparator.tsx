@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { X, Scissors, Download, Loader2, Music, Mic2, Drum, Guitar, Piano, Play, Pause, Volume2, VolumeX, DownloadCloud, RotateCcw, AlertTriangle, CheckCircle2, PackagePlus } from 'lucide-react';
+import { X, Scissors, Download, Loader2, Music, Mic2, Drum, Guitar, Piano, Play, Pause, Volume2, VolumeX, DownloadCloud, ArrowLeft, AlertTriangle, CheckCircle2, PackagePlus, History, Clock, AlertCircle, Repeat } from 'lucide-react';
 import type { Song } from '../../types';
 import { generateApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useStemProcessing } from '../../hooks/useStemProcessing';
 
 interface StemSeparatorProps {
   song: Song | null;
@@ -21,6 +22,14 @@ interface StemPlayerState {
   volume: number;
 }
 
+interface SeparatedSong {
+  baseName: string;
+  title: string | null;
+  stems: StemResult[];
+  stemCount: number;
+  separatedAt: string;
+}
+
 const DEMUCS_MODELS = [
   { value: 'htdemucs_ft', label: 'HTDemucs Fine-Tuned', desc: 'Mejor calidad · 4 stems', stems: 4 },
   { value: 'htdemucs', label: 'HTDemucs', desc: 'Rápido · 4 stems', stems: 4 },
@@ -28,11 +37,11 @@ const DEMUCS_MODELS = [
 ];
 
 const UVR_MODELS = [
-  { value: 'UVR-MDX-NET-Inst_HQ_3', label: 'MDX-Net Inst HQ 3', desc: 'Mejor general' },
-  { value: 'UVR-MDX-NET-Voc_FT', label: 'MDX-Net Vocal FT', desc: 'Enfocado en vocales' },
-  { value: 'UVR_MDXNET_KARA_2', label: 'MDX-Net Karaoke 2', desc: 'Karaoke' },
-  { value: 'Kim_Vocal_2', label: 'Kim Vocal 2', desc: 'Extracción vocal popular' },
-  { value: 'UVR-MDX-NET-Inst_3', label: 'MDX-Net Inst 3', desc: 'Instrumental limpio' },
+  { value: 'UVR-MDX-NET-Inst_HQ_3.onnx', label: 'MDX-Net Inst HQ 3', desc: 'Mejor general' },
+  { value: 'UVR-MDX-NET-Voc_FT.onnx', label: 'MDX-Net Vocal FT', desc: 'Enfocado en vocales' },
+  { value: 'UVR_MDXNET_KARA_2.onnx', label: 'MDX-Net Karaoke 2', desc: 'Karaoke' },
+  { value: 'Kim_Vocal_2.onnx', label: 'Kim Vocal 2', desc: 'Extracción vocal popular' },
+  { value: 'UVR-MDX-NET-Inst_3.onnx', label: 'MDX-Net Inst 3', desc: 'Instrumental limpio' },
 ];
 
 const ROFORMER_MODELS = [
@@ -119,7 +128,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
   // Reset model when backend changes
   useEffect(() => {
     if (backend === 'demucs') setModel('htdemucs_ft');
-    else if (backend === 'uvr') setModel('UVR-MDX-NET-Inst_HQ_3');
+    else if (backend === 'uvr') setModel('UVR-MDX-NET-Inst_HQ_3.onnx');
     else setModel('model_bs_roformer_ep_317_sdr_12.9755.ckpt');
   }, [backend]);
 
@@ -160,6 +169,42 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
   const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
   const seekBarRef = useRef<HTMLDivElement>(null);
   const animFrameRef = useRef<number>(0);
+
+  // History state
+  const [history, setHistory] = useState<SeparatedSong[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyTitle, setHistoryTitle] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Region selection for sample extraction
+  const [useRegion, setUseRegion] = useState(false);
+  const [regionStart, setRegionStart] = useState(0);
+  const [regionEnd, setRegionEnd] = useState(30);
+
+  // Processing hook
+  const { processing: globalProcessing, startProcessing, completeProcessing } = useStemProcessing();
+
+  // Fetch history on mount
+  useEffect(() => {
+    if (!song || !token) return;
+    setHistoryLoading(true);
+    generateApi.listSeparatedSongs(token)
+      .then(data => setHistory(data.songs || []))
+      .catch(() => setHistory([]))
+      .finally(() => setHistoryLoading(false));
+  }, [song, token]);
+
+  const handleLoadHistory = useCallback((item: SeparatedSong) => {
+    Object.values(audioRefs.current).forEach(a => { a.pause(); a.src = ''; });
+    audioRefs.current = {};
+    cancelAnimationFrame(animFrameRef.current);
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    setError('');
+    setStems(item.stems);
+    setHistoryTitle(item.title || item.baseName.slice(0, 12));
+  }, []);
 
   // Initialize player states when stems arrive
   useEffect(() => {
@@ -213,7 +258,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     }
   }, [isPlaying, updateTime]);
 
-  const handleSeek = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  const seekFromMouseEvent = useCallback((e: MouseEvent | React.MouseEvent) => {
     if (!seekBarRef.current || !duration) return;
     const rect = seekBarRef.current.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -221,6 +266,21 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     Object.values(audioRefs.current).forEach(a => { a.currentTime = newTime; });
     setCurrentTime(newTime);
   }, [duration]);
+
+  const seekFnRef = useRef(seekFromMouseEvent);
+  seekFnRef.current = seekFromMouseEvent;
+
+  const handleSeekMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    seekFnRef.current(e);
+    const onMove = (ev: MouseEvent) => seekFnRef.current(ev);
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
 
   const toggleMute = useCallback((name: string) => {
     setPlayerStates(prev => ({ ...prev, [name]: { ...prev[name], muted: !prev[name].muted, solo: false } }));
@@ -252,6 +312,17 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     Object.values(audioRefs.current).forEach(a => { a.pause(); a.src = ''; });
     audioRefs.current = {};
 
+    // Register processing in global state
+    startProcessing({
+      songId: song.id || song.audioUrl,
+      songTitle: song.title || 'Untitled',
+      audioUrl: song.audioUrl,
+      backend,
+      model,
+      quality,
+      ...(useRegion ? { regionStart, regionEnd } : {}),
+    });
+
     const progressInterval = setInterval(() => {
       setProgress(p => Math.min(p + 5, 90));
     }, 2000);
@@ -272,32 +343,37 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
       if (res.success && res.allStems) {
         const parsed = parseStemsFromResponse(res.allStems);
         setStems(parsed);
+        // Complete processing
+        completeProcessing();
+        // Refresh history
+        generateApi.listSeparatedSongs(token || '').then(data => setHistory(data.songs || [])).catch(() => {});
       }
     } catch (e: any) {
       clearInterval(progressInterval);
       setError(e.message || t('common.error'));
+      completeProcessing();
     } finally {
       setProcessing(false);
     }
-  }, [song, token, model, quality, backend, t]);
+  }, [song, token, model, quality, backend, useRegion, regionStart, regionEnd, startProcessing, completeProcessing, t]);
 
   const handleDownloadStem = useCallback((stem: StemResult) => {
     const a = document.createElement('a');
     a.href = stem.url;
-    a.download = `${song?.title || 'song'}_${stem.name}.wav`;
+    a.download = `${historyTitle || song?.title || 'song'}_${stem.name}.wav`;
     a.click();
-  }, [song]);
+  }, [song, historyTitle]);
 
   const handleDownloadAll = useCallback(() => {
     stems.forEach((stem, i) => {
       setTimeout(() => {
         const a = document.createElement('a');
         a.href = stem.url;
-        a.download = `${song?.title || 'song'}_${stem.name}.wav`;
+        a.download = `${historyTitle || song?.title || 'song'}_${stem.name}.wav`;
         a.click();
       }, i * 300);
     });
-  }, [stems, song]);
+  }, [stems, song, historyTitle]);
 
   const handleNewSeparation = useCallback(() => {
     Object.values(audioRefs.current).forEach(a => { a.pause(); a.src = ''; });
@@ -308,6 +384,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     setCurrentTime(0);
     setDuration(0);
     setError('');
+    setHistoryTitle(null);
   }, []);
 
   // When an audio ends, stop playback
@@ -319,29 +396,124 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
   if (!song) return null;
 
   const hasSolo = Object.values(playerStates).some(s => s.solo);
+  const displayTitle = historyTitle || song.title || 'Untitled';
+  const hasHistory = history.length > 0;
+  const historyVisible = showHistory && hasHistory;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className={`bg-surface-50 border border-surface-300 rounded-2xl ${stems.length > 0 ? 'w-[560px]' : 'w-[440px]'} max-h-[85vh] flex flex-col animate-scale-in shadow-2xl`}>
+      <div className={`bg-surface-50 border border-surface-300 rounded-2xl max-h-[85vh] flex flex-row animate-scale-in shadow-2xl relative
+        ${historyVisible ? (stems.length > 0 ? 'w-[750px]' : 'w-[640px]') : (stems.length > 0 ? 'w-[560px]' : 'w-[440px]')}`}>
+
+        {/* === History Sidebar === */}
+        {historyVisible && (
+          <div className="w-[200px] border-r border-surface-200 flex flex-col rounded-l-2xl overflow-hidden shrink-0">
+            <div className="px-3 py-3 border-b border-surface-200 bg-surface-100/50">
+              <h4 className="text-[11px] font-semibold uppercase tracking-wider text-surface-500 flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5" />
+                Historial
+              </h4>
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {historyLoading ? (
+                <div className="flex items-center justify-center py-4">
+                  <Loader2 className="w-4 h-4 animate-spin text-surface-400" />
+                </div>
+              ) : (
+                <>
+                  {/* Active processing indicator */}
+                  {globalProcessing && (
+                    <div className="px-3 py-3 border-b border-accent-200 bg-gradient-to-br from-accent-500/10 to-brand-500/10">
+                      <div className="flex items-start gap-2 mb-2">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-accent-500 mt-0.5 shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-accent-600 dark:text-accent-400 truncate">
+                            {globalProcessing.songTitle}
+                          </p>
+                          <p className="text-[10px] text-surface-500 mt-0.5">
+                            {globalProcessing.backend} · {globalProcessing.quality}
+                          </p>
+                        </div>
+                      </div>
+                      {/* Progress bar */}
+                      <div className="relative h-1.5 bg-surface-300 rounded-full overflow-hidden">
+                        <div
+                          className="absolute inset-y-0 left-0 bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-300"
+                          style={{ width: `${globalProcessing.progress}%` }}
+                        />
+                      </div>
+                      <p className="text-[10px] text-center text-surface-500 mt-1">
+                        {globalProcessing.progress}%
+                      </p>
+                    </div>
+                  )}
+                  
+                  {/* History items */}
+                  {history.map(item => {
+                    const label = item.title || item.baseName.slice(0, 12) + '…';
+                    const isActive = historyTitle === label && stems.length > 0;
+                    return (
+                      <button
+                        key={item.baseName}
+                        onClick={() => handleLoadHistory(item)}
+                        className={`w-full text-left px-3 py-2.5 border-b border-surface-100 hover:bg-surface-100 transition-colors group
+                          ${isActive ? 'bg-accent-500/10 border-l-2 !border-l-accent-500' : ''}`}
+                      >
+                        <p className="text-xs font-medium text-surface-800 truncate group-hover:text-accent-500 transition-colors">
+                          {item.title || item.baseName.slice(0, 12) + '…'}
+                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-surface-400">{item.stemCount} stems</span>
+                          <span className="text-[10px] text-surface-400 flex items-center gap-0.5">
+                            <Clock className="w-2.5 h-2.5" />
+                            {new Date(item.separatedAt).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* === Main Content === */}
+        <div className={`flex-1 flex flex-col min-w-0 ${historyVisible ? 'rounded-r-2xl' : 'rounded-2xl'}`}>
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200">
           <h3 className="text-sm font-semibold text-surface-900 flex items-center gap-2">
             <Scissors className="w-4 h-4 text-accent-400" />
             {t('stems.title', 'Stem Separation')}
           </h3>
-          <button onClick={onClose} className="text-surface-400 hover:text-surface-700 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {hasHistory && (
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className={`p-1.5 rounded-lg transition-all ${
+                  showHistory
+                    ? 'bg-accent-500/10 text-accent-500 hover:bg-accent-500/20'
+                    : 'text-surface-400 hover:text-surface-600 hover:bg-surface-100'
+                }`}
+                title={showHistory ? 'Ocultar historial' : 'Mostrar historial'}
+              >
+                <History className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button onClick={onClose} className="text-surface-400 hover:text-surface-700 transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className={`flex-1 overflow-y-auto p-4 space-y-4 ${globalProcessing ? 'pb-20' : ''}`}>
           {/* Song info */}
           <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-100 border border-surface-200">
             <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-accent-500/20 to-brand-500/20 flex items-center justify-center">
               <Music className="w-5 h-5 text-surface-400" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-surface-900 truncate">{song.title || 'Untitled'}</p>
+              <p className="text-sm font-medium text-surface-900 truncate">{displayTitle}</p>
               <p className="text-xs text-surface-500">{song.duration || '—'}</p>
             </div>
           </div>
@@ -472,6 +644,59 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
                   </div>
                 </div>
               )}
+
+              {/* Region selection for sample extraction */}
+              <div className="space-y-2 p-3 rounded-xl bg-gradient-to-br from-purple-500/10 to-blue-500/10 border border-purple-500/20">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="use-region"
+                    checked={useRegion}
+                    onChange={e => setUseRegion(e.target.checked)}
+                    disabled={processing}
+                    className="w-3.5 h-3.5 rounded accent-purple-500"
+                  />
+                  <label htmlFor="use-region" className="text-xs font-medium text-purple-600 dark:text-purple-300 flex items-center gap-1.5 cursor-pointer">
+                    <Scissors className="w-3 h-3" />
+                    Extraer región específica (samples)
+                  </label>
+                </div>
+                {useRegion && (
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <div>
+                      <label className="text-[10px] text-surface-600 block mb-1">Inicio (seg)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={regionStart}
+                        onChange={e => setRegionStart(Math.max(0, Number(e.target.value)))}
+                        disabled={processing}
+                        className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
+                          focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-surface-600 block mb-1">Fin (seg)</label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={regionEnd}
+                        onChange={e => setRegionEnd(Math.max(regionStart + 1, Number(e.target.value)))}
+                        disabled={processing}
+                        className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
+                          focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+                      />
+                    </div>
+                  </div>
+                )}
+                <p className="text-[10px] text-surface-500 mt-1.5">
+                  {useRegion
+                    ? `Extraerá stems de ${regionEnd - regionStart}s (${regionStart}s → ${regionEnd}s)`
+                    : 'Activar para extraer stems de una sección específica (útil para samples)'}
+                </p>
+              </div>
             </div>
           )}
 
@@ -492,7 +717,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
               ) : (
                 <>
                   <Scissors className="w-4 h-4" />
-                  {t('stems.separate', 'Separate Stems')}
+                  {useRegion ? 'Extraer Región' : t('stems.separate', 'Separate Stems')}
                 </>
               )}
             </button>
@@ -517,31 +742,32 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
           {stems.length > 0 && (
             <div className="space-y-3">
               {/* Transport bar */}
-              <div className="flex items-center gap-3 p-2 rounded-xl bg-surface-100 border border-surface-200">
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-surface-100 border border-surface-200">
                 <button
                   onClick={handlePlayPause}
-                  className="w-9 h-9 rounded-lg bg-gradient-to-r from-accent-600 to-brand-600 text-white
-                    flex items-center justify-center hover:from-accent-500 hover:to-brand-500 transition-all shadow-md"
+                  className="w-10 h-10 rounded-xl bg-gradient-to-r from-accent-600 to-brand-600 text-white
+                    flex items-center justify-center hover:from-accent-500 hover:to-brand-500 transition-all shadow-md shrink-0"
                 >
                   {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 ml-0.5" />}
                 </button>
-                <span className="text-xs font-mono text-surface-500 w-10 text-right">{formatTime(currentTime)}</span>
+                <span className="text-xs font-mono text-surface-500 w-12 text-right tabular-nums select-none">{formatTime(currentTime)}</span>
                 <div
                   ref={seekBarRef}
-                  onClick={handleSeek}
-                  className="flex-1 h-2 rounded-full bg-surface-300 cursor-pointer relative group"
+                  onMouseDown={handleSeekMouseDown}
+                  className="flex-1 h-6 flex items-center cursor-pointer relative group select-none"
                 >
+                  <div className="absolute inset-x-0 h-1.5 rounded-full bg-surface-300" />
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-accent-500 to-brand-500 transition-[width] duration-100"
+                    className="absolute left-0 h-1.5 rounded-full bg-gradient-to-r from-accent-500 to-brand-500 pointer-events-none"
                     style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }}
                   />
                   <div
-                    className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white shadow-md
-                      opacity-0 group-hover:opacity-100 transition-opacity"
-                    style={{ left: duration ? `calc(${(currentTime / duration) * 100}% - 6px)` : '0' }}
+                    className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 rounded-full bg-white shadow-lg shadow-black/20
+                      border-2 border-accent-500 pointer-events-none transition-transform group-hover:scale-125"
+                    style={{ left: duration ? `calc(${(currentTime / duration) * 100}% - 7px)` : '-7px' }}
                   />
                 </div>
-                <span className="text-xs font-mono text-surface-500 w-10">{formatTime(duration)}</span>
+                <span className="text-xs font-mono text-surface-500 w-12 tabular-nums select-none">{formatTime(duration)}</span>
               </div>
 
               {/* Stem tracks */}
@@ -639,17 +865,44 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
                   <DownloadCloud className="w-3.5 h-3.5" />
                   {t('stems.downloadAll', 'Download All Stems')}
                 </button>
-                <button
-                  onClick={handleNewSeparation}
-                  className="px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5
-                    bg-surface-200 text-surface-600 hover:bg-surface-300 transition-colors"
-                  title={t('stems.reseparate', 'New separation')}
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                </button>
               </div>
+              <button
+                onClick={handleNewSeparation}
+                className="w-full py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5
+                  bg-surface-200 text-surface-600 hover:bg-surface-300 transition-colors"
+                title={t('stems.reseparate', 'New separation')}
+              >
+                <Repeat className="w-3.5 h-3.5" />
+                {t('stems.newSeparation', 'Volver a separar')}
+              </button>
             </div>
           )}
+        </div>
+
+        {/* Global progress bar — always visible when processing */}
+        {globalProcessing && (
+          <div className="absolute bottom-0 left-0 right-0 bg-surface-50 border-t border-surface-200 px-4 py-3 rounded-b-2xl">
+            <div className="flex items-center gap-3">
+              <Loader2 className="w-4 h-4 animate-spin text-accent-500 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs font-medium text-surface-700 truncate">
+                    Separando: {globalProcessing.songTitle}
+                  </p>
+                  <span className="text-xs font-semibold text-accent-500 tabular-nums">
+                    {globalProcessing.progress}%
+                  </span>
+                </div>
+                <div className="relative h-2 bg-surface-300 rounded-full overflow-hidden">
+                  <div
+                    className="absolute inset-y-0 left-0 bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-300"
+                    style={{ width: `${globalProcessing.progress}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         </div>
       </div>
     </div>

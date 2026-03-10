@@ -184,6 +184,8 @@ export const generateApi = {
       body: { pkg },
       token,
     }),
+  listSeparatedSongs: (token: string) =>
+    api<{ songs: { baseName: string; title: string | null; stems: { name: string; url: string }[]; stemCount: number; separatedAt: string }[] }>('/api/training/separated-songs', { token }),
 };
 
 export interface GpuInfo {

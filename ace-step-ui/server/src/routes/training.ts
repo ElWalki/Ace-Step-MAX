@@ -10,6 +10,7 @@ import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { execSync, spawnSync, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
+import { pool } from '../db/pool.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1521,11 +1522,11 @@ router.get('/separator-models', authMiddleware, async (_req: AuthenticatedReques
       { name: 'htdemucs', backend: 'demucs', description: 'HTDemucs — fast 4-stem', stems: 4 },
       { name: 'htdemucs_6s', backend: 'demucs', description: 'HTDemucs 6-Stem — guitar & piano separation', stems: 6 },
       // UVR models
-      { name: 'UVR-MDX-NET-Inst_HQ_3', backend: 'uvr', description: 'MDX-Net Inst HQ 3 — best overall', stems: 2 },
-      { name: 'UVR-MDX-NET-Voc_FT', backend: 'uvr', description: 'MDX-Net Vocal FT — vocal-focused', stems: 2 },
-      { name: 'UVR_MDXNET_KARA_2', backend: 'uvr', description: 'MDX-Net Karaoke 2 — karaoke-grade', stems: 2 },
-      { name: 'Kim_Vocal_2', backend: 'uvr', description: 'Kim Vocal 2 — popular vocal extraction', stems: 2 },
-      { name: 'UVR-MDX-NET-Inst_3', backend: 'uvr', description: 'MDX-Net Inst 3 — clean instrumental', stems: 2 },
+      { name: 'UVR-MDX-NET-Inst_HQ_3.onnx', backend: 'uvr', description: 'MDX-Net Inst HQ 3 — best overall', stems: 2 },
+      { name: 'UVR-MDX-NET-Voc_FT.onnx', backend: 'uvr', description: 'MDX-Net Vocal FT — vocal-focused', stems: 2 },
+      { name: 'UVR_MDXNET_KARA_2.onnx', backend: 'uvr', description: 'MDX-Net Karaoke 2 — karaoke-grade', stems: 2 },
+      { name: 'Kim_Vocal_2.onnx', backend: 'uvr', description: 'Kim Vocal 2 — popular vocal extraction', stems: 2 },
+      { name: 'UVR-MDX-NET-Inst_3.onnx', backend: 'uvr', description: 'MDX-Net Inst 3 — clean instrumental', stems: 2 },
       // RoFormer models (state-of-the-art)
       { name: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt', backend: 'roformer', description: 'BS-RoFormer SDR 12.97 — best vocal/inst', stems: 2 },
       { name: 'model_bs_roformer_ep_368_sdr_12.9628.ckpt', backend: 'roformer', description: 'BS-RoFormer SDR 12.96 — excellent vocal/inst', stems: 2 },
@@ -1625,6 +1626,106 @@ router.post('/separator-deps/install', authMiddleware, async (req: Authenticated
   } catch (error) {
     console.error('[Training] separator-deps/install error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Installation failed' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  GET /api/training/separated-songs — List previously separated songs from stems dir
+// ---------------------------------------------------------------------------
+router.get('/separated-songs', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const stemsDir = path.join(__dirname, '../../public/audio/stems');
+    if (!existsSync(stemsDir)) {
+      res.json({ songs: [] });
+      return;
+    }
+
+    const files = readdirSync(stemsDir).filter(f => f.endsWith('.wav'));
+    const STEM_TYPES = ['vocals', 'instrumental', 'drums', 'bass', 'other', 'guitar', 'piano'];
+
+    // Group files by base name
+    const groups: Record<string, { stems: { name: string; url: string }[]; mtime: number }> = {};
+
+    for (const file of files) {
+      let baseName: string | null = null;
+      let stemType: string | null = null;
+
+      // Standard pattern: {baseName}_{stemType}.wav
+      for (const st of STEM_TYPES) {
+        if (file.endsWith(`_${st}.wav`)) {
+          baseName = file.slice(0, -(st.length + 5));
+          stemType = st;
+          break;
+        }
+      }
+
+      // RoFormer legacy pattern: {baseName}_(Vocals)_model...
+      if (!baseName) {
+        const roformerMatch = file.match(/^(.+?)_\((Vocals|Instrumental)\)/i);
+        if (roformerMatch) {
+          baseName = roformerMatch[1];
+          stemType = roformerMatch[2].toLowerCase();
+        }
+      }
+
+      if (!baseName || !stemType) continue;
+
+      if (!groups[baseName]) {
+        const stat = statSync(path.join(stemsDir, file));
+        groups[baseName] = { stems: [], mtime: stat.mtimeMs };
+      }
+
+      groups[baseName].stems.push({ name: stemType, url: `/audio/stems/${file}` });
+
+      const stat = statSync(path.join(stemsDir, file));
+      if (stat.mtimeMs > groups[baseName].mtime) {
+        groups[baseName].mtime = stat.mtimeMs;
+      }
+    }
+
+    // Cross-reference with DB to get song titles
+    const baseNames = Object.keys(groups);
+    const titleMap: Record<string, string> = {};
+
+    if (baseNames.length > 0) {
+      try {
+        // Song audio_url has format /audio/{id}.wav — match baseName to filename portion
+        const result = await pool.query(
+          `SELECT id, title, audio_url FROM songs WHERE id IN (${baseNames.map(() => '?').join(',')})`,
+          baseNames,
+        );
+        for (const row of result.rows) {
+          titleMap[row.id] = row.title;
+        }
+        // Also try matching by audio filename
+        for (const bn of baseNames) {
+          if (!titleMap[bn]) {
+            const byUrl = await pool.query(
+              `SELECT title FROM songs WHERE audio_url LIKE ?`,
+              [`%/${bn}.%`],
+            );
+            if (byUrl.rows.length > 0) titleMap[bn] = byUrl.rows[0].title;
+          }
+        }
+      } catch {
+        // DB lookup failed — not critical
+      }
+    }
+
+    const songs = Object.entries(groups).map(([baseName, data]) => ({
+      baseName,
+      title: titleMap[baseName] || null,
+      stems: data.stems,
+      stemCount: data.stems.length,
+      separatedAt: new Date(data.mtime).toISOString(),
+    }));
+
+    songs.sort((a, b) => new Date(b.separatedAt).getTime() - new Date(a.separatedAt).getTime());
+
+    res.json({ songs });
+  } catch (error) {
+    console.error('[Training] separated-songs error:', error);
+    res.status(500).json({ error: 'Failed to list separated songs' });
   }
 });
 

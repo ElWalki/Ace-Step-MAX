@@ -56,13 +56,13 @@ DEMUCS_MODELS = {
 
 # Curated UVR model presets — model_name must match audio-separator's model registry
 UVR_MODELS = {
-    "UVR-MDX-NET-Inst_HQ_3": {"description": "MDX-Net Inst HQ 3 — best overall vocal/inst", "stems": 2},
-    "UVR-MDX-NET-Voc_FT":    {"description": "MDX-Net Vocal FT — vocal-focused", "stems": 2},
-    "UVR_MDXNET_KARA_2":     {"description": "MDX-Net Karaoke 2 — karaoke-grade", "stems": 2},
-    "Kim_Vocal_2":            {"description": "Kim Vocal 2 — popular vocal extraction", "stems": 2},
-    "UVR-MDX-NET-Inst_3":    {"description": "MDX-Net Inst 3 — clean instrumental", "stems": 2},
+    "UVR-MDX-NET-Inst_HQ_3.onnx": {"description": "MDX-Net Inst HQ 3 — best overall vocal/inst", "stems": 2},
+    "UVR-MDX-NET-Voc_FT.onnx":    {"description": "MDX-Net Vocal FT — vocal-focused", "stems": 2},
+    "UVR_MDXNET_KARA_2.onnx":     {"description": "MDX-Net Karaoke 2 — karaoke-grade", "stems": 2},
+    "Kim_Vocal_2.onnx":            {"description": "Kim Vocal 2 — popular vocal extraction", "stems": 2},
+    "UVR-MDX-NET-Inst_3.onnx":    {"description": "MDX-Net Inst 3 — clean instrumental", "stems": 2},
 }
-DEFAULT_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_3"
+DEFAULT_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_3.onnx"
 
 # BS-RoFormer models — state-of-the-art vocal/instrumental separation via audio-separator
 ROFORMER_MODELS = {

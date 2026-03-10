@@ -48,6 +48,7 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
   const srcFileInputRef = useRef<HTMLInputElement>(null);
   const lyricsRef = useRef<HTMLTextAreaElement>(null);
   const simpleTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const styleTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // LoRA state
   const [showLoraManager, setShowLoraManager] = useState(false);
@@ -1105,13 +1106,36 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                 placeholder={t('create.titlePlaceholder')}
                 className="w-full bg-surface-100 border border-surface-300 rounded-md px-2 py-1.5 text-sm text-surface-900 placeholder:text-surface-400"
               />
-              <textarea
-                value={params.style}
-                onChange={e => set('style', e.target.value)}
-                placeholder={t('create.stylePlaceholder')}
-                rows={2}
-                className="w-full bg-surface-100 border border-surface-300 rounded-md px-2 py-1.5 text-sm text-surface-900 placeholder:text-surface-400 resize-y min-h-[40px] max-h-[200px]"
-              />
+              <div className="relative">
+                <textarea
+                  value={params.style}
+                  onChange={e => set('style', e.target.value)}
+                  placeholder={t('create.stylePlaceholder')}
+                  rows={2}
+                  ref={styleTextareaRef}
+                  className="w-full bg-surface-100 border border-surface-300 rounded-md px-2 py-1.5 text-sm text-surface-900 placeholder:text-surface-400 resize-none min-h-[40px] max-h-[200px]"
+                />
+                <div
+                  className="textarea-resize-handle"
+                  onMouseDown={e => {
+                    e.preventDefault();
+                    const textarea = styleTextareaRef.current;
+                    if (!textarea) return;
+                    const startY = e.clientY;
+                    const startH = textarea.offsetHeight;
+                    const onMove = (ev: MouseEvent) => {
+                      const newH = Math.max(40, Math.min(200, startH + ev.clientY - startY));
+                      textarea.style.height = `${newH}px`;
+                    };
+                    const onUp = () => {
+                      document.removeEventListener('mousemove', onMove);
+                      document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                  }}
+                />
+              </div>
               {/* Lyrics with colored overlay */}
               <div className="relative" ref={lyricsContainerRef}>
                 {/* Color toggle button */}
