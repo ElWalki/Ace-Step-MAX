@@ -12,6 +12,10 @@ interface PianoRollModalProps {
   onAddChord: (notes: number[], label: string) => void;
   engine: ChordAudioEngine;
   bpm?: number;
+  /** Pre-populate grid with these MIDI notes (for voicing editing) */
+  initialNotes?: number[];
+  /** When true, show "Update" instead of "Add" */
+  editMode?: boolean;
 }
 
 const LOWEST_MIDI = 36;  // C2
@@ -34,7 +38,7 @@ interface PlacedNote {
 let _nid = 0;
 const nid = () => `n-${++_nid}`;
 
-export default function PianoRollModal({ isOpen, onClose, onAddChord, engine, bpm = 120 }: PianoRollModalProps) {
+export default function PianoRollModal({ isOpen, onClose, onAddChord, engine, bpm = 120, initialNotes, editMode }: PianoRollModalProps) {
   const { t } = useTranslation();
   const [placedNotes, setPlacedNotes] = useState<PlacedNote[]>([]);
   const [rowHeight, setRowHeight] = useState(14);
@@ -51,6 +55,20 @@ export default function PianoRollModal({ isOpen, onClose, onAddChord, engine, bp
 
   // Note resize dragging
   const [resizingNote, setResizingNote] = useState<string | null>(null);
+
+  // Initialize from initialNotes when opening in edit mode
+  useEffect(() => {
+    if (isOpen && initialNotes && initialNotes.length > 0) {
+      setPlacedNotes(initialNotes.map((midi, i) => ({
+        midi,
+        col: 0,
+        duration: 1,
+        id: nid(),
+      })));
+    } else if (isOpen && !editMode) {
+      // Reset when opening fresh (not in edit mode)
+    }
+  }, [isOpen, initialNotes, editMode]);
 
   const isBlackKey = useCallback((midi: number) => BLACK_NOTE_INDICES.has(midi % 12), []);
   const noteLabel = useCallback((midi: number) => {
@@ -217,7 +235,10 @@ export default function PianoRollModal({ isOpen, onClose, onAddChord, engine, bp
           <div className="flex items-center gap-2">
             <Piano className="w-4 h-4 text-accent-400" />
             <span className="text-xs font-semibold text-[#ddd] tracking-wide">
-              {t('chords.pianoRollTitle', 'Piano Roll')}
+              {editMode
+                ? t('chords.pianoRollEditTitle', 'Edit Chord Voicing')
+                : t('chords.pianoRollTitle', 'Piano Roll')
+              }
             </span>
           </div>
           <div className="flex items-center gap-2">
@@ -470,7 +491,7 @@ export default function PianoRollModal({ isOpen, onClose, onAddChord, engine, bp
               className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-accent-500 text-white
                 hover:bg-accent-400 disabled:opacity-40 transition-colors">
               <Plus className="w-3 h-3" />
-              {t('chords.addCustom', 'Add Chord')}
+              {editMode ? t('chords.updateChord', 'Update Chord') : t('chords.addCustom', 'Add Chord')}
             </button>
           </div>
         </div>

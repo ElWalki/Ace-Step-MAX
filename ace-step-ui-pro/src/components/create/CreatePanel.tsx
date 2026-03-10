@@ -16,7 +16,7 @@ import StyleDnaPanel from './StyleDnaPanel';
 import {
   GenerationParams, DEFAULT_PARAMS,
   KEY_SIGNATURES, TIME_SIGNATURES, VOCAL_LANGUAGES,
-  ChordProgressionState,
+  ChordProgressionState, ChordApplyData,
   StyleDna, DEFAULT_STYLE_DNA, buildStyleDnaTags, styleDnaToModelParams,
   TagCadence, DEFAULT_TAG_CADENCES, buildTagCadenceHints,
 } from '../../types';
@@ -510,15 +510,40 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
     try { await generateApi.setLoraTagPosition({ position: pos }, token); } catch { /* ignore */ }
   }, [token, set]);
 
-  // Chord apply — conditional audio reference (style tag only, not lyrics)
-  const handleChordApply = useCallback((data: { styleTag: string; lyricsTag: string; keyScaleTag: string }) => {
+  // Chord apply — handles all injection modes
+  const [chordApplyLoading, setChordApplyLoading] = useState<string | null>(null);
+  const handleChordApply = useCallback(async (data: ChordApplyData) => {
+    // Always set the text tags (key/scale context)
     setParams(p => ({
       ...p,
       style: p.style ? `${p.style}, ${data.styleTag}` : data.styleTag,
       ...(data.lyricsTag ? { lyrics: p.lyrics ? `${data.lyricsTag}\n${p.lyrics}` : data.lyricsTag } : {}),
       keyScale: data.keyScaleTag || p.keyScale,
     }));
-  }, []);
+
+    if (data.mode === 'style' || !data.audioBlob) return;
+
+    // Audio modes: upload rendered WAV then apply
+    if (!token) return;
+    try {
+      setChordApplyLoading(data.mode === 'audioCodes' ? 'Extracting audio codes…' : 'Uploading reference…');
+      const file = new File([data.audioBlob], 'chord-progression.wav', { type: 'audio/wav' });
+      const uploadResult = await generateApi.uploadAudio(file, token);
+
+      if (data.mode === 'reference') {
+        set('referenceAudioUrl', uploadResult.url);
+        set('referenceAudioTitle', 'Chord Progression');
+      } else if (data.mode === 'audioCodes') {
+        setChordApplyLoading('Extracting audio codes…');
+        const codesResult = await generateApi.extractAudioCodes(uploadResult.url, token);
+        set('audioCodes', codesResult.audioCodes);
+      }
+    } catch (err) {
+      console.error('Chord injection failed:', err);
+    } finally {
+      setChordApplyLoading(null);
+    }
+  }, [token, set]);
 
   // Audio sections upload
   const handleAudioSectionUpload = useCallback(async (file: File, target: 'reference' | 'source' | 'vocal') => {
@@ -1250,8 +1275,17 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                       <ChordEditor
                         value={chordState}
                         onChange={setChordState}
-                        onApply={(data) => { handleChordApply(data); setShowChordModal(false); }}
+                        onApply={async (data) => {
+                          await handleChordApply(data);
+                          setShowChordModal(false);
+                        }}
                       />
+                      {chordApplyLoading && (
+                        <div className="mt-3 flex items-center gap-2 text-xs text-accent-400">
+                          <div className="w-3 h-3 border-2 border-accent-500 border-t-transparent rounded-full animate-spin" />
+                          {chordApplyLoading}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

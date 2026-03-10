@@ -280,6 +280,17 @@ export interface ChordProgressionState {
   beatsPerChord: number;
 }
 
+export type ChordInjectionMode = 'style' | 'audioCodes' | 'reference';
+
+export interface ChordApplyData {
+  mode: ChordInjectionMode;
+  styleTag: string;
+  lyricsTag: string;
+  keyScaleTag: string;
+  /** WAV blob for audioCodes/reference modes */
+  audioBlob?: Blob;
+}
+
 export interface ChordPreset {
   id: string;
   name: string;
@@ -335,7 +346,7 @@ export const KEY_SIGNATURES = [
 
 export const TIME_SIGNATURES = [
   { value: '', label: 'Auto' },
-  { value: '1', label: '1/1' },
+  { value: '1', label: '1/4' },
   { value: '2', label: '2/4' },
   { value: '3', label: '3/4' },
   { value: '4', label: '4/4' },
@@ -343,6 +354,10 @@ export const TIME_SIGNATURES = [
   { value: '6', label: '6/8' },
   { value: '7', label: '7/4' },
   { value: '8', label: '8/4' },
+  { value: '3/8', label: '3/8' },
+  { value: '3/6', label: '3/6' },
+  { value: '4/6', label: '4/6' },
+  { value: '1/1', label: '1/1' },
 ];
 
 export const VOCAL_LANGUAGES = [

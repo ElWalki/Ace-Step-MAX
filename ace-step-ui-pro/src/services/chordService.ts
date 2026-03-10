@@ -259,3 +259,100 @@ export function identifyChord(midiNotes: number[]): string {
   }
   return rootName;
 }
+
+// ── WAV rendering ─────────────────────────────────────────────────
+
+function writeWavString(view: DataView, offset: number, str: string) {
+  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+}
+
+function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const sampleRate = buffer.sampleRate;
+  const numSamples = buffer.length;
+  const bytesPerSample = 2;
+  const dataSize = numSamples * bytesPerSample;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+
+  writeWavString(view, 0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeWavString(view, 8, 'WAVE');
+  writeWavString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);       // PCM
+  view.setUint16(22, 1, true);       // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * bytesPerSample, true);
+  view.setUint16(32, bytesPerSample, true);
+  view.setUint16(34, 16, true);      // 16-bit
+  writeWavString(view, 36, 'data');
+  view.setUint32(40, dataSize, true);
+
+  const samples = buffer.getChannelData(0);
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    offset += 2;
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+/**
+ * Render a chord progression to a WAV Blob using OfflineAudioContext.
+ * Uses triangle + sine layered oscillators with ADSR envelope for clean harmonic content.
+ */
+export async function renderProgressionToWav(
+  chords: ResolvedChord[],
+  bpm: number,
+  beatsPerChord: number,
+  chordBeats?: number[],
+): Promise<Blob> {
+  const beatDur = 60 / bpm;
+  const totalDuration = chords.reduce(
+    (sum, _, i) => sum + (chordBeats?.[i] ?? beatsPerChord) * beatDur, 0,
+  );
+  const sampleRate = 44100;
+  const ctx = new OfflineAudioContext(1, Math.ceil(totalDuration * sampleRate) + sampleRate, sampleRate);
+
+  let offset = 0;
+  for (let i = 0; i < chords.length; i++) {
+    const dur = (chordBeats?.[i] ?? beatsPerChord) * beatDur;
+
+    for (const midi of chords[i].notes) {
+      const freq = 440 * Math.pow(2, (midi - 69) / 12);
+
+      // Triangle oscillator (harmonics)
+      const osc1 = ctx.createOscillator();
+      osc1.type = 'triangle';
+      osc1.frequency.value = freq;
+      const gain1 = ctx.createGain();
+      gain1.gain.setValueAtTime(0, offset);
+      gain1.gain.linearRampToValueAtTime(0.12, offset + 0.02);
+      gain1.gain.setValueAtTime(0.12, offset + dur * 0.6);
+      gain1.gain.exponentialRampToValueAtTime(0.001, offset + dur * 0.95);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(offset);
+      osc1.stop(offset + dur);
+
+      // Sine oscillator (fundamental body)
+      const osc2 = ctx.createOscillator();
+      osc2.type = 'sine';
+      osc2.frequency.value = freq;
+      const gain2 = ctx.createGain();
+      gain2.gain.setValueAtTime(0, offset);
+      gain2.gain.linearRampToValueAtTime(0.06, offset + 0.02);
+      gain2.gain.setValueAtTime(0.06, offset + dur * 0.6);
+      gain2.gain.exponentialRampToValueAtTime(0.001, offset + dur * 0.95);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(offset);
+      osc2.stop(offset + dur);
+    }
+    offset += dur;
+  }
+
+  const buffer = await ctx.startRendering();
+  return audioBufferToWav(buffer);
+}

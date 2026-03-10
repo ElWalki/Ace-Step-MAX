@@ -1,17 +1,22 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Music, Play, Square, Plus, Sparkles, ChevronDown, ChevronUp, Trash2, Piano, X, Save, FolderOpen } from 'lucide-react';
-import type { ChordProgressionState, ScaleType, ProgressionMood } from '../../types';
+import {
+  Music, Play, Square, Plus, Sparkles, ChevronDown, ChevronUp, Trash2,
+  Piano, X, Save, FolderOpen, ArrowLeft, ArrowRight, Zap, FileAudio, Type,
+  Edit3, Loader2,
+} from 'lucide-react';
+import type { ChordProgressionState, ScaleType, ProgressionMood, ChordInjectionMode, ChordApplyData } from '../../types';
 import {
   resolveProgression, resolveChord, parseRoman, CHORD_PRESETS, AVAILABLE_KEYS,
-  ChordAudioEngine, formatProgressionForGeneration,
+  ChordAudioEngine, formatProgressionForGeneration, renderProgressionToWav,
 } from '../../services/chordService';
+import type { ResolvedChord } from '../../services/chordService';
 import PianoRollModal from './PianoRollModal';
 
 interface ChordEditorProps {
   value: ChordProgressionState;
   onChange: (state: ChordProgressionState) => void;
-  onApply?: (data: { styleTag: string; lyricsTag: string; keyScaleTag: string }) => void;
+  onApply?: (data: ChordApplyData) => void;
 }
 
 interface PlacedChord {
@@ -46,6 +51,13 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
   const [presetMood, setPresetMood] = useState<ProgressionMood>('romantic');
   const [formatMode, setFormatMode] = useState<'roman' | 'letter'>('roman');
   const [showPianoRoll, setShowPianoRoll] = useState(false);
+
+  // Injection mode
+  const [injectionMode, setInjectionMode] = useState<ChordInjectionMode>('style');
+  const [isRendering, setIsRendering] = useState(false);
+
+  // Piano roll voicing edit
+  const [editingChordIdx, setEditingChordIdx] = useState<number | null>(null);
 
   // DnD state
   const [placedChords, setPlacedChords] = useState<PlacedChord[]>([]);
@@ -175,6 +187,29 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
     syncToParent(updated);
   }, [placedChords, syncToParent]);
 
+  const moveChordLeft = useCallback((index: number) => {
+    if (index <= 0) return;
+    const updated = [...placedChords];
+    [updated[index - 1], updated[index]] = [updated[index], updated[index - 1]];
+    setPlacedChords(updated);
+    syncToParent(updated);
+  }, [placedChords, syncToParent]);
+
+  const moveChordRight = useCallback((index: number) => {
+    if (index >= placedChords.length - 1) return;
+    const updated = [...placedChords];
+    [updated[index], updated[index + 1]] = [updated[index + 1], updated[index]];
+    setPlacedChords(updated);
+    syncToParent(updated);
+  }, [placedChords, syncToParent]);
+
+  const updateChordRoman = useCallback((index: number, roman: string) => {
+    const updated = [...placedChords];
+    updated[index] = { ...updated[index], roman };
+    setPlacedChords(updated);
+    syncToParent(updated);
+  }, [placedChords, syncToParent]);
+
   const setOctaveShift = useCallback((index: number, shift: number) => {
     setPlacedChords(prev => prev.map((pc, i) =>
       i === index ? { ...pc, octaveShift: Math.max(-2, Math.min(2, shift)) } : pc,
@@ -205,10 +240,25 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
     setPlayingIdx(-1);
   }, [isPlaying, resolvedPlaced, placedChords, value.bpm, value.beatsPerChord, getEngine]);
 
-  const handleApply = useCallback(() => {
-    const data = formatProgressionForGeneration(value.roman, value.key, value.scale);
-    onApply?.(data);
-  }, [value, onApply]);
+  const handleApply = useCallback(async () => {
+    const textData = formatProgressionForGeneration(value.roman, value.key, value.scale);
+    if (injectionMode === 'style') {
+      onApply?.({ mode: 'style', ...textData });
+      return;
+    }
+    // Audio modes — render progression to WAV
+    if (resolvedPlaced.length === 0) return;
+    setIsRendering(true);
+    try {
+      const chordBeats = placedChords.map(pc => pc.beats ?? value.beatsPerChord);
+      const blob = await renderProgressionToWav(resolvedPlaced, value.bpm, value.beatsPerChord, chordBeats);
+      onApply?.({ mode: injectionMode, ...textData, audioBlob: blob });
+    } catch (err) {
+      console.error('Failed to render chord audio:', err);
+    } finally {
+      setIsRendering(false);
+    }
+  }, [value, injectionMode, onApply, resolvedPlaced, placedChords]);
 
   const handlePresetSelect = useCallback((preset: typeof CHORD_PRESETS[0]) => {
     onChange({
@@ -222,8 +272,14 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
   }, [onChange, value.bpm, value.beatsPerChord]);
 
   const handlePianoRollAdd = useCallback((_notes: number[], label: string) => {
-    addChord(label);
-  }, [addChord]);
+    if (editingChordIdx !== null && editingChordIdx < placedChords.length) {
+      // Update existing chord voicing
+      updateChordRoman(editingChordIdx, label);
+      setEditingChordIdx(null);
+    } else {
+      addChord(label);
+    }
+  }, [addChord, editingChordIdx, placedChords.length, updateChordRoman]);
 
   // ── DnD handlers ─────────────────────────────────────────────────
   const onPaletteDragStart = useCallback((e: React.DragEvent, chord: string) => {
@@ -253,14 +309,15 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
     if (!container) return placedChords.length;
     const chordEls = container.querySelectorAll('[data-chord-idx]');
     for (const el of chordEls) {
+      const idx = parseInt((el as HTMLElement).dataset.chordIdx!, 10);
+      // Skip the element being dragged — it's still in DOM but visually dimmed
+      if (draggingIndex !== null && idx === draggingIndex) continue;
       const rect = (el as HTMLElement).getBoundingClientRect();
       const midX = rect.left + rect.width / 2;
-      if (e.clientX < midX) {
-        return parseInt((el as HTMLElement).dataset.chordIdx!, 10);
-      }
+      if (e.clientX < midX) return idx;
     }
     return placedChords.length;
-  }, [placedChords.length]);
+  }, [placedChords.length, draggingIndex]);
 
   const onTimelineDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -500,6 +557,21 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
                     <X className="w-2.5 h-2.5" />
                   </button>
 
+                  {/* Edit voicing button */}
+                  <button
+                    onClick={e => {
+                      e.stopPropagation();
+                      setEditingChordIdx(i);
+                      setShowPianoRoll(true);
+                    }}
+                    className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-brand-500 text-white
+                      flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity
+                      hover:bg-brand-400 z-10"
+                    title={t('chords.editVoicing', 'Edit voicing')}
+                  >
+                    <Edit3 className="w-2.5 h-2.5" />
+                  </button>
+
                   <span className="text-xs font-bold text-accent-400">
                     {formatMode === 'roman' ? chord.roman : chord.name}
                   </span>
@@ -550,6 +622,28 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
                       <ChevronUp className="w-2.5 h-2.5" />
                     </button>
                   </div>
+
+                  {/* Move arrows */}
+                  <div className="flex items-center gap-0.5 mt-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={e => { e.stopPropagation(); moveChordLeft(i); }}
+                      disabled={i === 0}
+                      className="w-4 h-4 rounded flex items-center justify-center text-surface-400
+                        hover:text-accent-400 hover:bg-accent-500/10 disabled:opacity-20 transition-colors"
+                      title={t('chords.moveLeft', 'Move left')}
+                    >
+                      <ArrowLeft className="w-2.5 h-2.5" />
+                    </button>
+                    <button
+                      onClick={e => { e.stopPropagation(); moveChordRight(i); }}
+                      disabled={i === placedChords.length - 1}
+                      className="w-4 h-4 rounded flex items-center justify-center text-surface-400
+                        hover:text-accent-400 hover:bg-accent-500/10 disabled:opacity-20 transition-colors"
+                      title={t('chords.moveRight', 'Move right')}
+                    >
+                      <ArrowRight className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
                 </div>
               </React.Fragment>
             );
@@ -596,6 +690,43 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
         className="w-full bg-surface-100 border border-surface-300 rounded-lg px-3 py-1.5 text-xs
           text-surface-900 placeholder:text-surface-400 font-mono"
       />
+
+      {/* ── Injection Mode Selector ────────── */}
+      <div className="rounded-xl border border-surface-300 bg-surface-50 p-2">
+        <span className="text-[10px] font-medium text-surface-500 uppercase tracking-wider mb-1.5 block">
+          {t('chords.injectionMode', 'Injection Mode')}
+        </span>
+        <div className="flex gap-1">
+          {([
+            { mode: 'style' as const, icon: Type, label: t('chords.modeStyle', 'Style Text'), desc: t('chords.modeStyleDesc', 'Add to style prompt as text') },
+            { mode: 'audioCodes' as const, icon: Zap, label: t('chords.modeCodes', 'Audio Codes'), desc: t('chords.modeCodesDesc', 'Inject as latent audio codes (strongest)') },
+            { mode: 'reference' as const, icon: FileAudio, label: t('chords.modeRef', 'Reference Audio'), desc: t('chords.modeRefDesc', 'Use as reference audio for timbre/style') },
+          ] as const).map(({ mode, icon: Icon, label, desc }) => (
+            <button
+              key={mode}
+              onClick={() => setInjectionMode(mode)}
+              className={`flex-1 flex flex-col items-center gap-1 px-2 py-2 rounded-lg border text-center
+                transition-all ${
+                  injectionMode === mode
+                    ? 'border-accent-500 bg-accent-500/10 text-accent-400 shadow-[0_0_8px_theme(colors.accent.500/20)]'
+                    : 'border-surface-300 bg-surface-100 text-surface-500 hover:bg-surface-200 hover:border-surface-400'
+                }`}
+              title={desc}
+            >
+              <Icon className="w-4 h-4" />
+              <span className="text-[10px] font-medium leading-tight">{label}</span>
+            </button>
+          ))}
+        </div>
+        {injectionMode !== 'style' && (
+          <p className="text-[9px] text-surface-400 mt-1.5 leading-snug">
+            {injectionMode === 'audioCodes'
+              ? t('chords.codesHint', '⚡ Renders chord audio → extracts semantic tokens → guides generation at latent level')
+              : t('chords.refHint', '🎵 Renders chord audio → uses as reference → model matches timbre & harmonic structure')
+            }
+          </p>
+        )}
+      </div>
 
       {/* ── Controls ────────── */}
       <div className="flex items-center gap-2 flex-wrap">
@@ -651,13 +782,28 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
         {onApply && (
           <button
             onClick={handleApply}
-            disabled={resolved.length === 0}
+            disabled={resolved.length === 0 || isRendering}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium
               bg-gradient-to-r from-accent-600 to-brand-600 text-white
               hover:from-accent-500 hover:to-brand-500 disabled:opacity-40 transition-all"
           >
-            <Music className="w-3 h-3" />
-            {t('chords.apply', 'Apply')}
+            {isRendering ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : injectionMode === 'audioCodes' ? (
+              <Zap className="w-3 h-3" />
+            ) : injectionMode === 'reference' ? (
+              <FileAudio className="w-3 h-3" />
+            ) : (
+              <Music className="w-3 h-3" />
+            )}
+            {isRendering
+              ? t('chords.rendering', 'Rendering…')
+              : injectionMode === 'style'
+                ? t('chords.apply', 'Apply')
+                : injectionMode === 'audioCodes'
+                  ? t('chords.applyCodes', 'Apply as Codes')
+                  : t('chords.applyRef', 'Apply as Reference')
+            }
           </button>
         )}
       </div>
@@ -760,10 +906,12 @@ export default function ChordEditor({ value, onChange, onApply }: ChordEditorPro
       {/* ── Piano Roll Modal ────────── */}
       <PianoRollModal
         isOpen={showPianoRoll}
-        onClose={() => setShowPianoRoll(false)}
+        onClose={() => { setShowPianoRoll(false); setEditingChordIdx(null); }}
         onAddChord={handlePianoRollAdd}
         engine={getEngine()}
         bpm={value.bpm}
+        initialNotes={editingChordIdx !== null ? resolvedPlaced[editingChordIdx]?.notes : undefined}
+        editMode={editingChordIdx !== null}
       />
     </div>
   );
