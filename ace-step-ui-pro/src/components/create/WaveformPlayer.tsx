@@ -46,10 +46,12 @@ export default function WaveformPlayer({
     const decode = async () => {
       try {
         const response = await fetch(src);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const buf = await response.arrayBuffer();
-        const ac = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const decoded = await ac.decodeAudioData(buf);
-        await ac.close();
+        // OfflineAudioContext avoids Chrome's autoplay policy that suspends
+        // regular AudioContext created without a user gesture
+        const oc = new OfflineAudioContext(1, 44100, 44100);
+        const decoded = await oc.decodeAudioData(buf);
         if (cancelled) return;
         const raw = decoded.getChannelData(0);
         const bars = 500;
@@ -134,7 +136,7 @@ export default function WaveformPlayer({
     const playedColor = isLight ? 'rgba(99,102,241,0.8)' : 'rgba(139,92,246,0.85)';
     const regionActiveColor = isLight ? 'rgba(99,102,241,0.85)' : 'rgba(168,85,247,0.9)';
     const regionColor = isLight ? 'rgba(99,102,241,0.3)' : 'rgba(168,85,247,0.3)';
-    const mutedColor = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.08)';
+    const mutedColor = isLight ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.2)';
 
     // Dense mirrored columns — raw WAV style
     for (let i = 0; i < pk.length; i++) {

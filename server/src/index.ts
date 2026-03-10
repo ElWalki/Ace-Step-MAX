@@ -40,6 +40,8 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       baseUri: ["'self'"],
+      connectSrc: ["'self'"],
+      mediaSrc: ["'self'", 'blob:', 'data:'],
       fontSrc: ["'self'", 'https:', 'data:'],
       formAction: ["'self'"],
       frameAncestors: ["'self'"],
