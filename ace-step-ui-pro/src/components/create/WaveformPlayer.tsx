@@ -274,7 +274,7 @@ export default function WaveformPlayer({
 
   return (
     <div className="space-y-1">
-      <audio ref={audioRef} src={src} preload="metadata"
+      <audio ref={audioRef} src={src} preload="metadata" className="hidden"
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onEnded={() => { setIsPlaying(false); setProgress(0); progressRef.current = 0; }}
       />
