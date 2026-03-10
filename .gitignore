@@ -81,6 +81,7 @@ ace-step-ui/public/uploads/
 ace-step-ui/public/outputs/
 ace-step-ui/public/audio/
 ace-step-ui/server/public/audio/
+ace-step-ui/server/models/
 
 # ACE-Step-1.5_ heavy directories
 ACE-Step-1.5_/python_embeded/

@@ -22,6 +22,19 @@ warnings.filterwarnings("ignore")
 
 MODELO_DEMUCS = "htdemucs_ft"
 
+def get_models_dir():
+    """Return a suitable directory for caching downloaded models."""
+    base = os.environ.get("AUDIO_SEPARATOR_MODELS_DIR")
+    if base:
+        os.makedirs(base, exist_ok=True)
+        return base
+    # Use a directory next to this script (inside the server folder)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    models_dir = os.path.join(script_dir, "..", "models", "audio-separator")
+    models_dir = os.path.normpath(models_dir)
+    os.makedirs(models_dir, exist_ok=True)
+    return models_dir
+
 # Available Demucs models and their stem configurations
 DEMUCS_MODELS = {
     "htdemucs_ft": {
@@ -279,6 +292,7 @@ def separate_uvr(audio_path, output_dir, model_name=None, stems=2, device=None):
         output_bitrate=None,
         normalization_threshold=0.9,
         amplification_threshold=0.6,
+        model_file_dir=get_models_dir(),
         mdx_params={
             "hop_length": 1024,
             "segment_size": 256,
@@ -301,23 +315,31 @@ def separate_uvr(audio_path, output_dir, model_name=None, stems=2, device=None):
         # Typically [instrumental_path, vocal_path] or [primary, secondary]
         for out_file in output_files:
             out_path = Path(out_file)
+            # audio-separator may return just filenames; resolve relative to output_dir
+            if not out_path.is_absolute():
+                out_path = output_dir / out_path
             name_lower = out_path.stem.lower()
             if "vocal" in name_lower or "primary" in name_lower:
                 # Rename to our convention
                 final_path = output_dir / f"{base_name}_vocals.wav"
-                out_path.rename(final_path)
+                if out_path != final_path:
+                    import shutil
+                    shutil.move(str(out_path), str(final_path))
                 result_stems["vocals"] = str(final_path)
                 print(f"[separate] Saved vocals: {final_path}", flush=True)
             elif "instrument" in name_lower or "no_vocal" in name_lower or "secondary" in name_lower:
                 final_path = output_dir / f"{base_name}_instrumental.wav"
-                out_path.rename(final_path)
+                if out_path != final_path:
+                    import shutil
+                    shutil.move(str(out_path), str(final_path))
                 result_stems["instrumental"] = str(final_path)
                 print(f"[separate] Saved instrumental: {final_path}", flush=True)
             else:
                 # Unknown output — keep with descriptive name
                 final_path = output_dir / f"{base_name}_{out_path.stem}.wav"
                 if out_path != final_path:
-                    out_path.rename(final_path)
+                    import shutil
+                    shutil.move(str(out_path), str(final_path))
                 result_stems[out_path.stem] = str(final_path)
                 print(f"[separate] Saved {out_path.stem}: {final_path}", flush=True)
 
@@ -332,14 +354,20 @@ def separate_uvr(audio_path, output_dir, model_name=None, stems=2, device=None):
 
         for out_file in output_files:
             out_path = Path(out_file)
+            if not out_path.is_absolute():
+                out_path = output_dir / out_path
             name_lower = out_path.stem.lower()
             if "vocal" in name_lower or "primary" in name_lower:
                 vocals_path = output_dir / f"{base_name}_vocals.wav"
-                out_path.rename(vocals_path)
+                if out_path != vocals_path:
+                    import shutil
+                    shutil.move(str(out_path), str(vocals_path))
                 result_stems["vocals"] = str(vocals_path)
             else:
                 instrumental_path = output_dir / f"{base_name}_instrumental.wav"
-                out_path.rename(instrumental_path)
+                if out_path != instrumental_path:
+                    import shutil
+                    shutil.move(str(out_path), str(instrumental_path))
                 result_stems["instrumental"] = str(instrumental_path)
 
         # Pass 2: If we have instrumental and want 4 stems, try to extract drums/bass
@@ -440,6 +468,7 @@ def separate_roformer(audio_path, output_dir, model_name=None, device=None):
         output_bitrate=None,
         normalization_threshold=0.9,
         amplification_threshold=0.6,
+        model_file_dir=get_models_dir(),
     )
 
     separator.load_model(model_filename=model_name)
@@ -451,21 +480,29 @@ def separate_roformer(audio_path, output_dir, model_name=None, device=None):
 
     for out_file in output_files:
         out_path = Path(out_file)
+        # audio-separator may return just filenames; resolve relative to output_dir
+        if not out_path.is_absolute():
+            out_path = output_dir / out_path
         name_lower = out_path.stem.lower()
         if "vocal" in name_lower or "primary" in name_lower:
             final_path = output_dir / f"{base_name}_vocals.wav"
-            out_path.rename(final_path)
+            if out_path != final_path:
+                import shutil
+                shutil.move(str(out_path), str(final_path))
             result_stems["vocals"] = str(final_path)
             print(f"[separate] Saved vocals: {final_path}", flush=True)
         elif "instrument" in name_lower or "no_vocal" in name_lower or "secondary" in name_lower:
             final_path = output_dir / f"{base_name}_instrumental.wav"
-            out_path.rename(final_path)
+            if out_path != final_path:
+                import shutil
+                shutil.move(str(out_path), str(final_path))
             result_stems["instrumental"] = str(final_path)
             print(f"[separate] Saved instrumental: {final_path}", flush=True)
         else:
             final_path = output_dir / f"{base_name}_{out_path.stem}.wav"
             if out_path != final_path:
-                out_path.rename(final_path)
+                import shutil
+                shutil.move(str(out_path), str(final_path))
             result_stems[out_path.stem] = str(final_path)
             print(f"[separate] Saved {out_path.stem}: {final_path}", flush=True)
 
