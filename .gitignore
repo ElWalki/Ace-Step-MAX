@@ -152,3 +152,25 @@ ACE-Step-1.5_ /
 *.ico
 *.npy
 *.npz
+
+# Server data & stems
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
+server/public/audio/stems/
+server/public/demucs-web/output/
+server/public/audio/reference-tracks/*
+
+# Secrets / tokens
+*.pem
+*.key
+jwt_secret.txt
+
+# External editors
+wavacity-editor/
+
+# Vite cache
+.vite/
+
+# Test coverage
+coverage/
