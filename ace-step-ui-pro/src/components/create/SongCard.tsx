@@ -50,16 +50,50 @@ function generateBars(id: string, count: number): number[] {
 }
 
 const BAR_COUNT = 500;
+const waveformBufferCache = new Map<string, AudioBuffer>();
 
 /** Inline mini waveform – professional DAW-style mirrored bars, seekable via click/drag */
-function MiniWaveform({ songId, isPlaying, isCurrent, audioRef }: {
+function MiniWaveform({ songId, isPlaying, isCurrent, audioUrl, audioRef }: {
   songId: string; isPlaying: boolean; isCurrent: boolean;
+  audioUrl?: string;
   audioRef?: React.RefObject<HTMLAudioElement>;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bars = useMemo(() => generateBars(songId, BAR_COUNT), [songId]);
   const rafRef = useRef<number>(0);
   const activeRef = useRef(false);
+  const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
+
+  // Decode real audio waveform and keep it cached by URL.
+  useEffect(() => {
+    if (!audioUrl) return;
+
+    const cached = waveformBufferCache.get(audioUrl);
+    if (cached) {
+      setAudioBuffer(cached);
+      return;
+    }
+
+    let cancelled = false;
+    const decode = async () => {
+      try {
+        const response = await fetch(audioUrl);
+        const arr = await response.arrayBuffer();
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const decoded = await audioContext.decodeAudioData(arr);
+        await audioContext.close();
+        if (!cancelled) {
+          waveformBufferCache.set(audioUrl, decoded);
+          setAudioBuffer(decoded);
+        }
+      } catch {
+        // Keep fallback bars if decode fails.
+      }
+    };
+
+    decode();
+    return () => { cancelled = true; };
+  }, [audioUrl]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -90,12 +124,25 @@ function MiniWaveform({ songId, isPlaying, isCurrent, audioRef }: {
       const playedColor = isLight ? 'rgba(99,102,241,0.85)' : 'rgba(139,92,246,0.9)';
       const mutedColor = isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.13)';
 
-      // Dense mirrored columns — raw WAV style
+      // Dense mirrored columns — real waveform when available, fallback otherwise.
       for (let i = 0; i < bars.length; i++) {
         const x = Math.round(i * barW);
         const nextX = Math.round((i + 1) * barW);
         const colW = Math.max(1, nextX - x);
-        const halfH = Math.max(0.5, bars[i] * maxHalf);
+        let halfH = Math.max(0.5, bars[i] * maxHalf);
+
+        if (audioBuffer) {
+          const channel = audioBuffer.getChannelData(0);
+          const start = Math.floor((i / bars.length) * channel.length);
+          const end = Math.floor(((i + 1) / bars.length) * channel.length);
+          let peak = 0;
+          for (let j = start; j < end; j++) {
+            const abs = Math.abs(channel[j] || 0);
+            if (abs > peak) peak = abs;
+          }
+          halfH = Math.max(0.5, peak * maxHalf);
+        }
+
         const pct = (i + 0.5) / bars.length;
         ctx.fillStyle = (isCurrent && progress > 0 && pct <= progress) ? playedColor : mutedColor;
         ctx.fillRect(x, midY - halfH, colW, halfH);
@@ -134,7 +181,7 @@ function MiniWaveform({ songId, isPlaying, isCurrent, audioRef }: {
       cancelAnimationFrame(rafRef.current);
       audio?.removeEventListener('timeupdate', onTime);
     };
-  }, [songId, isPlaying, isCurrent, audioRef, bars]);
+  }, [songId, isPlaying, isCurrent, audioRef, bars, audioBuffer]);
 
   // Seek on click/drag
   const handleSeekStart = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -379,6 +426,7 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
               songId={song.id}
               isPlaying={isPlaying}
               isCurrent={isCurrent}
+              audioUrl={song.audioUrl}
               audioRef={audioRef}
             />
           )}
