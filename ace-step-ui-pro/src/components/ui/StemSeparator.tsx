@@ -179,7 +179,13 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
   // Region selection for sample extraction
   const [useRegion, setUseRegion] = useState(false);
   const [regionStart, setRegionStart] = useState(0);
-  const [regionEnd, setRegionEnd] = useState(30);
+  const [regionEnd, setRegionEnd] = useState(2);
+  const [previewAudioDuration, setPreviewAudioDuration] = useState(0);
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
+  const regionCanvasRef = useRef<HTMLCanvasElement>(null);
+  const regionContainerRef = useRef<HTMLDivElement>(null);
+  const [isDraggingStart, setIsDraggingStart] = useState(false);
+  const [isDraggingEnd, setIsDraggingEnd] = useState(false);
 
   // Processing hook
   const { processing: globalProcessing, startProcessing, completeProcessing } = useStemProcessing();
@@ -239,14 +245,40 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
       setCurrentTime(first.currentTime);
       if (first.duration && isFinite(first.duration)) setDuration(first.duration);
     }
+    // Region loop logic for preview audio
+    if (useRegion && previewAudioRef.current && isPlaying) {
+      const audio = previewAudioRef.current;
+      if (audio.currentTime >= regionEnd) {
+        audio.currentTime = regionStart;
+      }
+    }
     animFrameRef.current = requestAnimationFrame(updateTime);
-  }, []);
+  }, [useRegion, regionStart, regionEnd, isPlaying]);
 
   const handlePlayPause = useCallback(() => {
+    // Region preview mode (before separation)
+    if (useRegion && stems.length === 0 && previewAudioRef.current) {
+      const audio = previewAudioRef.current;
+      if (isPlaying) {
+        audio.pause();
+        cancelAnimationFrame(animFrameRef.current);
+        setIsPlaying(false);
+      } else {
+        // Start from region start
+        audio.currentTime = regionStart;
+        audio.play();
+        animFrameRef.current = requestAnimationFrame(updateTime);
+        setIsPlaying(true);
+      }
+      return;
+    }
+
+    // Normal stem playback
     const audios = Object.values(audioRefs.current);
     if (audios.length === 0) return;
     if (isPlaying) {
       audios.forEach(a => a.pause());
+      if (previewAudioRef.current) previewAudioRef.current.pause();
       cancelAnimationFrame(animFrameRef.current);
       setIsPlaying(false);
     } else {
@@ -256,7 +288,7 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
       animFrameRef.current = requestAnimationFrame(updateTime);
       setIsPlaying(true);
     }
-  }, [isPlaying, updateTime]);
+  }, [isPlaying, updateTime, useRegion, stems.length, regionStart]);
 
   const seekFromMouseEvent = useCallback((e: MouseEvent | React.MouseEvent) => {
     if (!seekBarRef.current || !duration) return;
@@ -386,6 +418,203 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
     setError('');
     setHistoryTitle(null);
   }, []);
+
+  // Draw waveform on canvas
+  const drawWaveform = useCallback(() => {
+    const canvas = regionCanvasRef.current;
+    const audio = previewAudioRef.current;
+    if (!canvas || !audio || !useRegion || !previewAudioDuration) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = canvas.offsetWidth;
+    const h = canvas.offsetHeight;
+    if (!w || !h) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    const isLight = document.documentElement.classList.contains('light');
+    const bgColor = isLight ? 'rgba(248,250,252,1)' : 'rgba(30,30,40,1)';
+    const waveColor = isLight ? 'rgba(139,92,246,0.3)' : 'rgba(139,92,246,0.4)';
+    const regionColor = isLight ? 'rgba(139,92,246,0.15)' : 'rgba(139,92,246,0.2)';
+    const handleColor = isLight ? 'rgba(139,92,246,0.8)' : 'rgba(168,85,247,0.9)';
+
+    // Background
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, w, h);
+
+    // Draw simple waveform bars
+    const barCount = 100;
+    const barWidth = w / barCount;
+    const midY = h / 2;
+    const maxHeight = h * 0.4;
+
+    for (let i = 0; i < barCount; i++) {
+      const x = i * barWidth;
+      // Pseudo-random height based on position
+      const seed = (i * 1103515245 + 12345) >>> 0;
+      const height = maxHeight * (0.3 + 0.7 * ((seed >> 16) & 0x7fff) / 0x7fff);
+      
+      const pct = i / barCount;
+      const time = pct * previewAudioDuration;
+      const inRegion = time >= regionStart && time <= regionEnd;
+
+      ctx.fillStyle = inRegion ? handleColor : waveColor;
+      ctx.fillRect(x, midY - height, Math.max(1, barWidth - 1), height);
+      ctx.fillRect(x, midY, Math.max(1, barWidth - 1), height);
+    }
+
+    // Region overlay
+    const startX = (regionStart / previewAudioDuration) * w;
+    const endX = (regionEnd / previewAudioDuration) * w;
+    ctx.fillStyle = regionColor;
+    ctx.fillRect(startX, 0, endX - startX, h);
+
+    // Handles
+    const handleWidth = 3;
+    ctx.fillStyle = handleColor;
+    ctx.fillRect(startX - handleWidth / 2, 0, handleWidth, h);
+    ctx.fillRect(endX - handleWidth / 2, 0, handleWidth, h);
+
+    // Time labels
+    ctx.fillStyle = isLight ? 'rgba(0,0,0,0.7)' : 'rgba(255,255,255,0.7)';
+    ctx.font = '10px monospace';
+    ctx.fillText(`${regionStart.toFixed(1)}s`, startX + 5, 15);
+    ctx.fillText(`${regionEnd.toFixed(1)}s`, endX - 40, 15);
+
+    // Current time indicator
+    if (isPlaying && audio.currentTime >= regionStart && audio.currentTime <= regionEnd) {
+      const currentX = (audio.currentTime / previewAudioDuration) * w;
+      ctx.strokeStyle = isLight ? 'rgba(99,102,241,0.9)' : 'rgba(255,255,255,0.8)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(currentX, 0);
+      ctx.lineTo(currentX, h);
+      ctx.stroke();
+    }
+  }, [useRegion, previewAudioDuration, regionStart, regionEnd, isPlaying]);
+
+  // Update waveform when preview audio is loaded
+  useEffect(() => {
+    const audio = previewAudioRef.current;
+    if (!audio || !song?.audioUrl) return;
+
+    const onLoadedMetadata = () => {
+      const dur = audio.duration;
+      if (dur && isFinite(dur)) {
+        setPreviewAudioDuration(dur);
+        // Initialize regionEnd if needed
+        if (regionEnd === 2 && dur > 2) {
+          setRegionEnd(Math.min(30, dur));
+        }
+      }
+    };
+
+    audio.addEventListener('loadedmetadata', onLoadedMetadata);
+    return () => audio.removeEventListener('loadedmetadata', onLoadedMetadata);
+  }, [song?.audioUrl, regionEnd]);
+
+  // Redraw waveform when needed
+  useEffect(() => {
+    if (!useRegion) return;
+    drawWaveform();
+    
+    // Animation loop for playhead
+    let rafId: number;
+    const loop = () => {
+      drawWaveform();
+      rafId = requestAnimationFrame(loop);
+    };
+    if (isPlaying) {
+      rafId = requestAnimationFrame(loop);
+    }
+    return () => cancelAnimationFrame(rafId);
+  }, [useRegion, drawWaveform, isPlaying]);
+
+  // Handle region dragging
+  const handleRegionMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!regionContainerRef.current || !previewAudioDuration) return;
+    e.preventDefault();
+
+    const rect = regionContainerRef.current.getBoundingClientRect();
+    const startX = (regionStart / previewAudioDuration) * rect.width;
+    const endX = (regionEnd / previewAudioDuration) * rect.width;
+    const clickX = e.clientX - rect.left;
+
+    const HANDLE_TOLERANCE = 10;
+
+    // Check if clicking near start handle
+    if (Math.abs(clickX - startX) < HANDLE_TOLERANCE) {
+      setIsDraggingStart(true);
+      return;
+    }
+
+    // Check if clicking near end handle
+    if (Math.abs(clickX - endX) < HANDLE_TOLERANCE) {
+      setIsDraggingEnd(true);
+      return;
+    }
+
+    // Click in the middle — seek to that position
+    const clickTime = Math.max(0, Math.min(previewAudioDuration, (clickX / rect.width) * previewAudioDuration));
+    if (previewAudioRef.current) {
+      previewAudioRef.current.currentTime = clickTime;
+      // Start playing if not already
+      if (!isPlaying) {
+        handlePlayPause();
+      }
+    }
+  }, [previewAudioDuration, regionStart, regionEnd, isPlaying, handlePlayPause]);
+
+  // Handle mouse move for dragging
+  useEffect(() => {
+    if (!isDraggingStart && !isDraggingEnd) return;
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!regionContainerRef.current || !previewAudioDuration) return;
+      const rect = regionContainerRef.current.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const newTime = Math.max(0, Math.min(previewAudioDuration, (clickX / rect.width) * previewAudioDuration));
+
+      if (isDraggingStart) {
+        // Ensure minimum 2 seconds
+        const maxStart = regionEnd - 2;
+        setRegionStart(Math.max(0, Math.min(maxStart, newTime)));
+      } else if (isDraggingEnd) {
+        // Ensure minimum 2 seconds
+        const minEnd = regionStart + 2;
+        setRegionEnd(Math.max(minEnd, Math.min(previewAudioDuration, newTime)));
+      }
+    };
+
+    const onMouseUp = () => {
+      setIsDraggingStart(false);
+      setIsDraggingEnd(false);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, [isDraggingStart, isDraggingEnd, previewAudioDuration, regionStart, regionEnd]);
+
+  // Validate region inputs
+  const handleRegionStartChange = useCallback((value: number) => {
+    const maxStart = regionEnd - 2;
+    setRegionStart(Math.max(0, Math.min(maxStart, value)));
+  }, [regionEnd]);
+
+  const handleRegionEndChange = useCallback((value: number) => {
+    const minEnd = regionStart + 2;
+    setRegionEnd(Math.max(minEnd, Math.min(previewAudioDuration || 9999, value)));
+  }, [regionStart, previewAudioDuration]);
 
   // When an audio ends, stop playback
   const handleAudioEnded = useCallback(() => {
@@ -661,42 +890,81 @@ export default function StemSeparator({ song, onClose }: StemSeparatorProps) {
                     Extraer región específica (samples)
                   </label>
                 </div>
+                
                 {useRegion && (
-                  <div className="grid grid-cols-2 gap-2 mt-2">
-                    <div>
-                      <label className="text-[10px] text-surface-600 block mb-1">Inicio (seg)</label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={regionStart}
-                        onChange={e => setRegionStart(Math.max(0, Number(e.target.value)))}
-                        disabled={processing}
-                        className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
-                          focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+                  <>
+                    {/* Visual waveform region selector */}
+                    <div ref={regionContainerRef} className="relative mt-3 rounded-lg overflow-hidden border border-purple-500/30 bg-surface-50">
+                      <canvas
+                        ref={regionCanvasRef}
+                        onMouseDown={handleRegionMouseDown}
+                        className="w-full h-20 cursor-crosshair"
+                        style={{ display: 'block' }}
                       />
+                      <div className="absolute top-1 right-1 flex items-center gap-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handlePlayPause(); }}
+                          disabled={processing}
+                          className="p-1 rounded bg-purple-500/20 hover:bg-purple-500/30 text-purple-600 dark:text-purple-300 transition-colors disabled:opacity-50"
+                          title={isPlaying ? 'Pausar preview' : 'Reproducir región'}
+                        >
+                          {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                        </button>
+                      </div>
                     </div>
-                    <div>
-                      <label className="text-[10px] text-surface-600 block mb-1">Fin (seg)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={regionEnd}
-                        onChange={e => setRegionEnd(Math.max(regionStart + 1, Number(e.target.value)))}
-                        disabled={processing}
-                        className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
-                          focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
-                      />
+
+                    {/* Time inputs */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-surface-600 block mb-1">Inicio (seg)</label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={regionStart}
+                          onChange={e => handleRegionStartChange(Number(e.target.value))}
+                          disabled={processing}
+                          className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
+                            focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-surface-600 block mb-1">Fin (seg)</label>
+                        <input
+                          type="number"
+                          min={regionStart + 2}
+                          step="0.1"
+                          value={regionEnd}
+                          onChange={e => handleRegionEndChange(Number(e.target.value))}
+                          disabled={processing}
+                          className="w-full bg-surface-100 border border-surface-300 rounded-lg px-2 py-1.5 text-xs text-surface-900
+                            focus:outline-none focus:border-purple-500 transition-colors disabled:opacity-50"
+                        />
+                      </div>
                     </div>
-                  </div>
+
+                    <p className="text-[10px] text-surface-500">
+                      Duración: {(regionEnd - regionStart).toFixed(1)}s · Click izquierdo para saltar · Arrastra bordes para ajustar
+                    </p>
+                  </>
                 )}
-                <p className="text-[10px] text-surface-500 mt-1.5">
-                  {useRegion
-                    ? `Extraerá stems de ${regionEnd - regionStart}s (${regionStart}s → ${regionEnd}s)`
-                    : 'Activar para extraer stems de una sección específica (útil para samples)'}
-                </p>
+                
+                {!useRegion && (
+                  <p className="text-[10px] text-surface-500 mt-1.5">
+                    Activar para extraer stems de una sección específica (útil para samples). Mínimo 2 segundos.
+                  </p>
+                )}
               </div>
+
+              {/* Hidden preview audio element */}
+              {song?.audioUrl && (
+                <audio
+                  ref={previewAudioRef}
+                  src={song.audioUrl}
+                  preload="metadata"
+                  style={{ display: 'none' }}
+                />
+              )}
             </div>
           )}
 
