@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
-import { execSync, spawn } from 'child_process';
+import { execSync, spawnSync, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1364,7 +1364,7 @@ router.post('/separate-stems', authMiddleware, async (req: AuthenticatedRequest,
     // Validate parameters
     const validQualities = ['rapida', 'alta', 'maxima'];
     const safeQuality = validQualities.includes(quality) ? quality : 'alta';
-    const validBackends = ['demucs', 'uvr'];
+    const validBackends = ['demucs', 'uvr', 'roformer'];
     const safeBackend = validBackends.includes(backend) ? backend : 'demucs';
     const safeStems = [2, 4, 6].includes(Number(stems)) ? Number(stems) : 2;
 
@@ -1526,10 +1526,105 @@ router.get('/separator-models', authMiddleware, async (_req: AuthenticatedReques
       { name: 'UVR_MDXNET_KARA_2', backend: 'uvr', description: 'MDX-Net Karaoke 2 — karaoke-grade', stems: 2 },
       { name: 'Kim_Vocal_2', backend: 'uvr', description: 'Kim Vocal 2 — popular vocal extraction', stems: 2 },
       { name: 'UVR-MDX-NET-Inst_3', backend: 'uvr', description: 'MDX-Net Inst 3 — clean instrumental', stems: 2 },
+      // RoFormer models (state-of-the-art)
+      { name: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt', backend: 'roformer', description: 'BS-RoFormer SDR 12.97 — best vocal/inst', stems: 2 },
+      { name: 'model_bs_roformer_ep_368_sdr_12.9628.ckpt', backend: 'roformer', description: 'BS-RoFormer SDR 12.96 — excellent vocal/inst', stems: 2 },
+      { name: 'model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt', backend: 'roformer', description: 'Mel-Band RoFormer SDR 11.43', stems: 2 },
     ];
     res.json({ models });
   } catch (error) {
     res.status(500).json({ error: 'Failed to list models' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  GET /api/training/separator-deps — Check which separator packages are installed
+// ---------------------------------------------------------------------------
+router.get('/separator-deps', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const aceStepDir = getAceStepDir();
+    const pythonPath = resolvePythonPath(aceStepDir);
+
+    // Check both packages in a single Python call (use spawnSync to avoid shell escaping issues on Windows)
+    const checkScript = [
+      'import json, sys',
+      'deps = {}',
+      'try:',
+      '    import demucs',
+      "    deps['demucs'] = True",
+      'except ImportError:',
+      "    deps['demucs'] = False",
+      'try:',
+      '    import audio_separator',
+      "    deps['audioSeparator'] = True",
+      'except ImportError:',
+      "    deps['audioSeparator'] = False",
+      'print(json.dumps(deps))',
+    ].join('\n');
+
+    const result = spawnSync(pythonPath, ['-c', checkScript], {
+      cwd: aceStepDir,
+      timeout: 15000,
+      encoding: 'utf-8',
+    });
+
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(result.stderr || `Python exited with code ${result.status}`);
+
+    const deps = JSON.parse(result.stdout.trim());
+    res.json(deps);
+  } catch (error) {
+    console.error('[Training] separator-deps check error:', error);
+    // If Python itself is not found, report both as unavailable
+    res.json({ demucs: false, audioSeparator: false });
+  }
+});
+
+// ---------------------------------------------------------------------------
+//  POST /api/training/separator-deps/install — Install a separator package
+// ---------------------------------------------------------------------------
+router.post('/separator-deps/install', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { pkg } = req.body;
+    const allowed = ['demucs', 'audio-separator'] as const;
+    if (!pkg || !allowed.includes(pkg)) {
+      res.status(400).json({ error: `Invalid package. Allowed: ${allowed.join(', ')}` });
+      return;
+    }
+
+    const aceStepDir = getAceStepDir();
+    const pythonPath = resolvePythonPath(aceStepDir);
+
+    console.log(`[Training] Installing separator package: ${pkg}`);
+
+    const child = spawn(pythonPath, ['-m', 'pip', 'install', pkg], {
+      cwd: aceStepDir,
+      env: { ...process.env },
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
+    child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+    child.on('close', (code) => {
+      if (code === 0) {
+        console.log(`[Training] Successfully installed ${pkg}`);
+        res.json({ success: true, package: pkg, output: stdout });
+      } else {
+        console.error(`[Training] Failed to install ${pkg}:`, stderr);
+        res.status(500).json({ success: false, package: pkg, error: stderr || `pip install exited with code ${code}` });
+      }
+    });
+
+    child.on('error', (err) => {
+      console.error(`[Training] Spawn error installing ${pkg}:`, err);
+      res.status(500).json({ success: false, package: pkg, error: err.message });
+    });
+  } catch (error) {
+    console.error('[Training] separator-deps/install error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Installation failed' });
   }
 });
 

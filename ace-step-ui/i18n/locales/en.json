@@ -452,5 +452,27 @@
     },
     "mobileDrawer": {
         "closeAriaLabel": "Close drawer"
-    }
+    },
+    "extractStems": "Extract Stems",
+    "stemBackend": "Separation Engine",
+    "stemQuality": "Quality",
+    "stemQualityFast": "Fast",
+    "stemQualityHigh": "High",
+    "stemQualityMax": "Maximum",
+    "stemModel": "Model",
+    "stemProcessing": "Separating…",
+    "stemProcessingHint": "This may take about a minute depending on the audio length",
+    "stemResults": "Separated Stems",
+    "stemDownloadAll": "Download All",
+    "stemNewSeparation": "New Separation",
+    "stemSeparate": "Separate Stems",
+    "stemSeparationFailed": "Stem separation failed",
+    "stemUvr4NotSupported": "UVR only supports 2-stem separation",
+    "stemRoformerDownloadNote": "RoFormer models (~400MB) are downloaded automatically on first use. The first separation may take longer.",
+    "stemDepsChecking": "Checking dependencies…",
+    "stemDepsMissing": "Package \"{{pkg}}\" is not installed. Install it to use this engine.",
+    "stemDepsInstall": "Install {{pkg}}",
+    "stemDepsInstalling": "Installing…",
+    "stemDepsReady": "Dependencies ready",
+    "stemInstallFailed": "Installation failed. Check the server logs."
 }

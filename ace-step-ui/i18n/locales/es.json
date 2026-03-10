@@ -452,5 +452,27 @@
     },
     "mobileDrawer": {
         "closeAriaLabel": "Cerrar panel"
-    }
+    },
+    "extractStems": "Extraer Stems",
+    "stemBackend": "Motor de Separación",
+    "stemQuality": "Calidad",
+    "stemQualityFast": "Rápida",
+    "stemQualityHigh": "Alta",
+    "stemQualityMax": "Máxima",
+    "stemModel": "Modelo",
+    "stemProcessing": "Separando…",
+    "stemProcessingHint": "Puede tardar un minuto dependiendo de la duración del audio",
+    "stemResults": "Stems Separados",
+    "stemDownloadAll": "Descargar Todo",
+    "stemNewSeparation": "Nueva Separación",
+    "stemSeparate": "Separar Stems",
+    "stemSeparationFailed": "La separación de stems falló",
+    "stemUvr4NotSupported": "UVR solo admite separación en 2 stems",
+    "stemRoformerDownloadNote": "Los modelos RoFormer (~400MB) se descargan automáticamente en el primer uso. La primera separación puede tardar más.",
+    "stemDepsChecking": "Verificando dependencias…",
+    "stemDepsMissing": "El paquete \"{{pkg}}\" no está instalado. Instálalo para usar este motor.",
+    "stemDepsInstall": "Instalar {{pkg}}",
+    "stemDepsInstalling": "Instalando…",
+    "stemDepsReady": "Dependencias listas",
+    "stemInstallFailed": "La instalación falló. Revisa los logs del servidor."
 }

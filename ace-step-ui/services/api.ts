@@ -992,7 +992,7 @@ export const trainingApi = {
   }> => api('/api/training/auto-label-single', { method: 'POST', body: { audioPath, transcribeLyrics }, token }),
 
   separateStems: (audioPath: string, quality: 'rapida' | 'alta' | 'maxima' = 'alta', token?: string, options?: {
-    backend?: 'demucs' | 'uvr';
+    backend?: 'demucs' | 'uvr' | 'roformer';
     model?: string;
     stems?: 2 | 4;
   }): Promise<{
@@ -1020,6 +1020,18 @@ export const trainingApi = {
   separatorModels: (token?: string): Promise<{
     models: Array<{ name: string; description: string; stems: number }>;
   }> => api('/api/training/separator-models', { token }),
+
+  separatorDeps: (token?: string): Promise<{
+    demucs: boolean;
+    audioSeparator: boolean;
+  }> => api('/api/training/separator-deps', { token }),
+
+  installSeparatorDep: (pkg: 'demucs' | 'audio-separator', token?: string): Promise<{
+    success: boolean;
+    package: string;
+    output?: string;
+    error?: string;
+  }> => api('/api/training/separator-deps/install', { method: 'POST', body: { pkg }, token }),
 
   // Detect BPM and musical key from an audio file
   detectBpmKey: (audioPath: string, token?: string, options?: {

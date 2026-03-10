@@ -51,6 +51,23 @@ UVR_MODELS = {
 }
 DEFAULT_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_3"
 
+# BS-RoFormer models — state-of-the-art vocal/instrumental separation via audio-separator
+ROFORMER_MODELS = {
+    "model_bs_roformer_ep_317_sdr_12.9755.ckpt": {
+        "description": "BS-RoFormer ep317 SDR 12.97 — best vocal/inst separation",
+        "stems": 2,
+    },
+    "model_bs_roformer_ep_368_sdr_12.9628.ckpt": {
+        "description": "BS-RoFormer ep368 SDR 12.96 — excellent vocal/inst",
+        "stems": 2,
+    },
+    "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt": {
+        "description": "Mel-Band RoFormer ep3005 SDR 11.43 — good alternative",
+        "stems": 2,
+    },
+}
+DEFAULT_ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+
 
 def get_device():
     import torch
@@ -381,13 +398,99 @@ def separate_uvr(audio_path, output_dir, model_name=None, stems=2, device=None):
 # ---------------------------------------------------------------------------
 #  LIST AVAILABLE MODELS
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  ROFORMER BACKEND
+# ---------------------------------------------------------------------------
+def separate_roformer(audio_path, output_dir, model_name=None, device=None):
+    """Separate audio using BS-RoFormer via audio-separator.
+
+    Args:
+        audio_path: Path to the input audio file
+        output_dir: Directory to save separated stems
+        model_name: RoFormer model checkpoint name. Auto-selected if None.
+        device: Device to use. Auto-detected if None.
+
+    Returns:
+        dict with paths to separated files and metadata
+    """
+    from audio_separator.separator import Separator
+    from pathlib import Path
+    import torchaudio
+
+    if model_name is None:
+        model_name = DEFAULT_ROFORMER_MODEL
+
+    audio_path = Path(audio_path)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_name = audio_path.stem
+
+    # Get duration
+    wav, sr = torchaudio.load(str(audio_path))
+    duration_sec = wav.shape[1] / sr
+    del wav
+
+    print(f"[separate] Loading RoFormer model: {model_name}...", flush=True)
+    print(f"[separate] Duration: {duration_sec:.1f}s", flush=True)
+
+    separator = Separator(
+        output_dir=str(output_dir),
+        output_format="WAV",
+        output_bitrate=None,
+        normalization_threshold=0.9,
+        amplification_threshold=0.6,
+    )
+
+    separator.load_model(model_filename=model_name)
+
+    result_stems = {}
+
+    print(f"[separate] Separating with RoFormer ({model_name})...", flush=True)
+    output_files = separator.separate(str(audio_path))
+
+    for out_file in output_files:
+        out_path = Path(out_file)
+        name_lower = out_path.stem.lower()
+        if "vocal" in name_lower or "primary" in name_lower:
+            final_path = output_dir / f"{base_name}_vocals.wav"
+            out_path.rename(final_path)
+            result_stems["vocals"] = str(final_path)
+            print(f"[separate] Saved vocals: {final_path}", flush=True)
+        elif "instrument" in name_lower or "no_vocal" in name_lower or "secondary" in name_lower:
+            final_path = output_dir / f"{base_name}_instrumental.wav"
+            out_path.rename(final_path)
+            result_stems["instrumental"] = str(final_path)
+            print(f"[separate] Saved instrumental: {final_path}", flush=True)
+        else:
+            final_path = output_dir / f"{base_name}_{out_path.stem}.wav"
+            if out_path != final_path:
+                out_path.rename(final_path)
+            result_stems[out_path.stem] = str(final_path)
+            print(f"[separate] Saved {out_path.stem}: {final_path}", flush=True)
+
+    del separator
+
+    return {
+        "success": True,
+        "backend": "roformer",
+        "model": model_name,
+        "stems": result_stems,
+        "stem_count": len(result_stems),
+        "duration": round(duration_sec, 2),
+        "base_name": base_name,
+    }
+
+
 def list_models():
-    """Return available model presets (Demucs + UVR)."""
+    """Return available model presets (Demucs + UVR + RoFormer)."""
     models = []
     for name, info in DEMUCS_MODELS.items():
         models.append({"name": name, "backend": "demucs", "description": info["description"], "stems": info["max_stems"]})
     for name, info in UVR_MODELS.items():
         models.append({"name": name, "backend": "uvr", "description": info["description"], "stems": info["stems"]})
+    for name, info in ROFORMER_MODELS.items():
+        models.append({"name": name, "backend": "roformer", "description": info["description"], "stems": info["stems"]})
     return models
 
 
@@ -398,8 +501,8 @@ def main():
     parser = argparse.ArgumentParser(description="Separate audio into stems using Demucs or UVR (MDX-Net)")
     parser.add_argument("--audio", type=str, help="Path to input audio file")
     parser.add_argument("--output", type=str, help="Output directory for separated stems")
-    parser.add_argument("--backend", type=str, default="demucs", choices=["demucs", "uvr"],
-                        help="Separation backend: demucs or uvr (MDX-Net)")
+    parser.add_argument("--backend", type=str, default="demucs", choices=["demucs", "uvr", "roformer"],
+                        help="Separation backend: demucs, uvr (MDX-Net), or roformer (BS-RoFormer)")
     parser.add_argument("--quality", type=str, default="alta", choices=["rapida", "alta", "maxima"],
                         help="Demucs quality: rapida(shifts=1), alta(shifts=5), maxima(shifts=10)")
     parser.add_argument("--model", type=str, default=None,
@@ -443,7 +546,14 @@ def main():
     try:
         start_time = time.time()
 
-        if args.backend == "uvr":
+        if args.backend == "roformer":
+            result = separate_roformer(
+                audio_path=args.audio,
+                output_dir=args.output,
+                model_name=args.model,
+                device=args.device,
+            )
+        elif args.backend == "uvr":
             result = separate_uvr(
                 audio_path=args.audio,
                 output_dir=args.output,

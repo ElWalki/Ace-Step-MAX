@@ -446,8 +446,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [instrumentalAudioUrl, setInstrumentalAudioUrl] = useState('');
   const [isSeparating, setIsSeparating] = useState(false);
   const [separationQuality, setSeparationQuality] = useState<'rapida' | 'alta' | 'maxima'>('alta');
-  const [separationBackend, setSeparationBackend] = useState<'demucs' | 'uvr'>('demucs');
+  const [separationBackend, setSeparationBackend] = useState<'demucs' | 'uvr' | 'roformer'>('demucs');
   const [separationModel, setSeparationModel] = useState('UVR-MDX-NET-Inst_HQ_3');
+  const [roformerModel, setRoformerModel] = useState('model_bs_roformer_ep_317_sdr_12.9755.ckpt');
   const [separationStems, setSeparationStems] = useState<2 | 4>(2);
   const [extraStems, setExtraStems] = useState<Record<string, { url: string; filename: string }>>({});
   const [useVocalAsReference, setUseVocalAsReference] = useState(true);
@@ -2230,7 +2231,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     try {
       const result = await trainingApi.separateStems(audioUrl, separationQuality, token || undefined, {
         backend: separationBackend,
-        model: separationBackend === 'uvr' ? separationModel : undefined,
+        model: separationBackend === 'uvr' ? separationModel : separationBackend === 'roformer' ? roformerModel : undefined,
         stems: separationStems,
       });
       if (result.success) {
@@ -3847,7 +3848,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       <div className="flex items-center gap-2 p-2.5 rounded-lg bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800/30">
                         <Loader2 size={14} className="animate-spin text-violet-500" />
                         <span className="text-[11px] text-violet-700 dark:text-violet-300 font-medium">
-                          Separating audio with {separationBackend === 'uvr' ? 'UVR (MDX-Net)' : 'Demucs'}... This may take a few minutes.
+                          Separating audio with {separationBackend === 'uvr' ? 'UVR (MDX-Net)' : separationBackend === 'roformer' ? 'RoFormer' : 'Demucs'}... This may take a few minutes.
                         </span>
                       </div>
                     )}
@@ -3859,7 +3860,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         <div className="flex items-center gap-2">
                           <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Engine</label>
                           <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
-                            {(['demucs', 'uvr'] as const).map((b) => (
+                            {(['demucs', 'roformer', 'uvr'] as const).map((b) => (
                               <button
                                 key={b}
                                 type="button"
@@ -3870,10 +3871,13 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                                     : 'text-zinc-500 dark:text-zinc-400 hover:text-zinc-700'
                                 }`}
                               >
-                                {b === 'demucs' ? 'Demucs' : 'UVR / MDX-Net'}
+                                {b === 'demucs' ? 'Demucs' : b === 'roformer' ? 'RoFormer' : 'UVR / MDX-Net'}
                               </button>
                             ))}
                           </div>
+                          {separationBackend === 'roformer' && (
+                            <span className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">BEST</span>
+                          )}
                         </div>
 
                         {/* Quality selector (Demucs only) */}
@@ -3917,7 +3921,29 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                           </div>
                         )}
 
-                        {/* Stem count selector */}
+                        {/* RoFormer Model selector */}
+                        {separationBackend === 'roformer' && (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2">
+                              <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Model</label>
+                              <select
+                                value={roformerModel}
+                                onChange={(e) => setRoformerModel(e.target.value)}
+                                className="flex-1 text-[10px] bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-md px-2 py-1 text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-violet-500"
+                              >
+                                <option value="model_bs_roformer_ep_317_sdr_12.9755.ckpt">BS-RoFormer SDR 12.97 (best)</option>
+                                <option value="model_bs_roformer_ep_368_sdr_12.9628.ckpt">BS-RoFormer SDR 12.96</option>
+                                <option value="model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt">Mel-Band RoFormer SDR 11.43</option>
+                              </select>
+                            </div>
+                            <p className="text-[9px] text-zinc-400 dark:text-zinc-500 pl-1">
+                              State-of-the-art vocal/instrumental separation. Model auto-downloads on first use (~400MB).
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Stem count selector (not for RoFormer - always 2 stems) */}
+                        {separationBackend !== 'roformer' && (
                         <div className="flex items-center gap-2">
                           <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">Stems</label>
                           <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-md p-0.5">
@@ -3937,6 +3963,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                             ))}
                           </div>
                         </div>
+                        )}
 
                         {/* Auto-apply toggles */}
                         <div className="flex flex-col gap-1.5">
@@ -3984,7 +4011,7 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                         {/* Extra stems indicators (drums, bass, other) */}
                         {Object.keys(extraStems).length > 0 && (
                           <div className="space-y-1">
-                            {Object.entries(extraStems).map(([stemName, stemData]) => (
+                            {Object.entries(extraStems).map(([stemName, stemData]: [string, { url: string; filename: string }]) => (
                               <div key={stemName} className="flex items-center gap-2 p-1.5 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800/20">
                                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                                 <span className="text-[10px] text-amber-700 dark:text-amber-400 capitalize">{stemName}</span>

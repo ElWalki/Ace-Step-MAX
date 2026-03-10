@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
-import { X, Play, Download, Pause, Loader2, Music, Mic, Guitar, Drum, Volume2 } from 'lucide-react';
+import { X, Play, Download, Pause, Loader2, Music, Mic, Guitar, Drum, Volume2, AlertTriangle, CheckCircle2, PackagePlus } from 'lucide-react';
 import { useI18n } from '../context/I18nContext';
 import { useAuth } from '../context/AuthContext';
 import { trainingApi } from '../services/api';
@@ -15,13 +15,27 @@ const UVR_MODELS = [
   { name: 'UVR-MDX-NET-Inst_3', description: 'MDX-Net Inst 3 — clean instrumental' },
 ];
 
+// Demucs models (must match separate_audio.py)
+const DEMUCS_MODELS = [
+  { name: 'htdemucs_ft', description: 'HTDemucs Fine-Tuned — best quality', stems: 4 },
+  { name: 'htdemucs', description: 'HTDemucs — fast', stems: 4 },
+  { name: 'htdemucs_6s', description: 'HTDemucs 6-Stem — guitar & piano', stems: 6 },
+];
+
+// RoFormer models (must match separate_audio.py)
+const ROFORMER_MODELS = [
+  { name: 'model_bs_roformer_ep_317_sdr_12.9755.ckpt', description: 'BS-RoFormer SDR 12.97', badge: 'BEST' },
+  { name: 'model_bs_roformer_ep_368_sdr_12.9628.ckpt', description: 'BS-RoFormer SDR 12.96' },
+  { name: 'model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt', description: 'Mel-Band RoFormer SDR 11.43' },
+];
+
 interface StemSeparationModalProps {
   isOpen: boolean;
   onClose: () => void;
   song: Song;
 }
 
-type Backend = 'demucs' | 'uvr';
+type Backend = 'demucs' | 'uvr' | 'roformer';
 type Quality = 'rapida' | 'alta' | 'maxima';
 type StemCount = 2 | 4;
 
@@ -56,6 +70,8 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
   const [quality, setQuality] = useState<Quality>('alta');
   const [stems, setStems] = useState<StemCount>(2);
   const [uvrModel, setUvrModel] = useState(UVR_MODELS[0].name);
+  const [roformerModel, setRoformerModel] = useState(ROFORMER_MODELS[0].name);
+  const [demucsModel, setDemucsModel] = useState(DEMUCS_MODELS[0].name);
 
   // State
   const [processing, setProcessing] = useState(false);
@@ -63,6 +79,12 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
   const [results, setResults] = useState<Record<string, StemResult> | null>(null);
   const [elapsed, setElapsed] = useState<number | null>(null);
   const [playingStem, setPlayingStem] = useState<string | null>(null);
+
+  // Dependency status
+  const [deps, setDeps] = useState<{ demucs: boolean; audioSeparator: boolean } | null>(null);
+  const [depsLoading, setDepsLoading] = useState(false);
+  const [installing, setInstalling] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   // Audio refs for playback
   const audioRefs = useRef<Record<string, HTMLAudioElement>>({});
@@ -87,6 +109,42 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
     };
   }, []);
 
+  // Check separator dependencies when modal opens
+  useEffect(() => {
+    if (!isOpen) return;
+    setDepsLoading(true);
+    setInstallError(null);
+    trainingApi.separatorDeps(token || undefined)
+      .then(d => setDeps(d))
+      .catch(() => setDeps(null))
+      .finally(() => setDepsLoading(false));
+  }, [isOpen, token]);
+
+  // Which package does the selected backend need?
+  const backendPkg = backend === 'demucs' ? 'demucs' as const : 'audio-separator' as const;
+  const backendReady = deps === null
+    ? true // if check failed, don't block the user
+    : backend === 'demucs' ? deps.demucs : deps.audioSeparator;
+
+  const handleInstallDep = async (pkg: 'demucs' | 'audio-separator') => {
+    setInstalling(pkg);
+    setInstallError(null);
+    try {
+      const result = await trainingApi.installSeparatorDep(pkg, token || undefined);
+      if (result.success) {
+        // Refresh deps
+        const d = await trainingApi.separatorDeps(token || undefined);
+        setDeps(d);
+      } else {
+        setInstallError(result.error || t('stemInstallFailed'));
+      }
+    } catch (err: any) {
+      setInstallError(err?.message || t('stemInstallFailed'));
+    } finally {
+      setInstalling(null);
+    }
+  };
+
   if (!isOpen) return null;
 
   const handleSeparate = async () => {
@@ -105,8 +163,8 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
         token || undefined,
         {
           backend,
-          model: backend === 'uvr' ? uvrModel : undefined,
-          stems,
+          model: backend === 'demucs' ? demucsModel : backend === 'uvr' ? uvrModel : backend === 'roformer' ? roformerModel : undefined,
+          stems: backend === 'roformer' ? 2 : stems,
         }
       );
 
@@ -217,55 +275,134 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
               {t('stemBackend')}
             </label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <button
                 onClick={() => !processing && setBackend('demucs')}
                 disabled={processing}
-                className={`px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
+                className={`px-2 py-2.5 rounded-xl text-sm font-medium transition-all border ${
                   backend === 'demucs'
                     ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-600 dark:text-indigo-400'
                     : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
                 } disabled:opacity-50`}
               >
-                <div className="font-semibold">Demucs</div>
-                <div className="text-[10px] opacity-70 mt-0.5">htdemucs_ft · 2/4 stems</div>
+                <div className="font-semibold text-xs">Demucs</div>
+                <div className="text-[9px] opacity-70 mt-0.5">2/4 stems</div>
+              </button>
+              <button
+                onClick={() => !processing && setBackend('roformer')}
+                disabled={processing}
+                className={`px-2 py-2.5 rounded-xl text-sm font-medium transition-all border relative ${
+                  backend === 'roformer'
+                    ? 'bg-emerald-500/10 border-emerald-500/50 text-emerald-600 dark:text-emerald-400'
+                    : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
+                } disabled:opacity-50`}
+              >
+                <span className="absolute -top-1.5 -right-1.5 px-1 py-0.5 text-[8px] font-bold bg-emerald-500 text-white rounded-full leading-none">BEST</span>
+                <div className="font-semibold text-xs">RoFormer</div>
+                <div className="text-[9px] opacity-70 mt-0.5">SDR 12.97</div>
               </button>
               <button
                 onClick={() => !processing && setBackend('uvr')}
                 disabled={processing}
-                className={`px-3 py-2.5 rounded-xl text-sm font-medium transition-all border ${
+                className={`px-2 py-2.5 rounded-xl text-sm font-medium transition-all border ${
                   backend === 'uvr'
                     ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-600 dark:text-indigo-400'
                     : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
                 } disabled:opacity-50`}
               >
-                <div className="font-semibold">UVR (MDX-Net)</div>
-                <div className="text-[10px] opacity-70 mt-0.5">{t('stemUvrDesc')}</div>
+                <div className="font-semibold text-xs">UVR</div>
+                <div className="text-[9px] opacity-70 mt-0.5">MDX-Net</div>
               </button>
             </div>
           </div>
 
+          {/* Dependency status banner */}
+          {depsLoading && (
+            <div className="flex items-center gap-2 px-3 py-2 bg-zinc-500/10 border border-zinc-500/20 rounded-lg">
+              <Loader2 size={14} className="animate-spin text-zinc-400" />
+              <span className="text-xs text-zinc-400">{t('stemDepsChecking')}</span>
+            </div>
+          )}
+          {!depsLoading && deps && !backendReady && (
+            <div className="px-3 py-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={14} className="text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-xs text-amber-300/90">
+                  {t('stemDepsMissing', { pkg: backendPkg })}
+                </p>
+              </div>
+              {installError && (
+                <p className="text-xs text-red-400 pl-5">{installError}</p>
+              )}
+              <button
+                onClick={() => handleInstallDep(backendPkg)}
+                disabled={!!installing}
+                className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/30 rounded-lg text-xs font-medium text-amber-300 transition-colors disabled:opacity-50 w-full justify-center"
+              >
+                {installing === backendPkg ? (
+                  <>
+                    <Loader2 size={12} className="animate-spin" />
+                    {t('stemDepsInstalling')}
+                  </>
+                ) : (
+                  <>
+                    <PackagePlus size={12} />
+                    {t('stemDepsInstall', { pkg: backendPkg })}
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+          {!depsLoading && deps && backendReady && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-emerald-400/80">
+              <CheckCircle2 size={12} />
+              <span className="text-[11px]">{t('stemDepsReady')}</span>
+            </div>
+          )}
+
           {/* Demucs options */}
           {backend === 'demucs' && (
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
-                {t('stemQuality')}
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {(['rapida', 'alta', 'maxima'] as Quality[]).map(q => (
-                  <button
-                    key={q}
-                    onClick={() => !processing && setQuality(q)}
-                    disabled={processing}
-                    className={`px-2 py-2 rounded-lg text-xs font-medium transition-all border ${
-                      quality === q
-                        ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-600 dark:text-indigo-400'
-                        : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
-                    } disabled:opacity-50`}
-                  >
-                    {qualityLabels[q]}
-                  </button>
-                ))}
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('stemModel')}
+                </label>
+                <select
+                  value={demucsModel}
+                  onChange={(e) => {
+                    setDemucsModel(e.target.value);
+                    // Auto-adjust stems based on model capability
+                    const m = DEMUCS_MODELS.find(dm => dm.name === e.target.value);
+                    if (m && m.stems === 6 && stems < 4) setStems(4);
+                  }}
+                  disabled={processing}
+                  className="w-full px-3 py-2 rounded-lg text-sm bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 text-zinc-900 dark:text-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                >
+                  {DEMUCS_MODELS.map(m => (
+                    <option key={m.name} value={m.name}>{m.description} ({m.stems} stems)</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                  {t('stemQuality')}
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['rapida', 'alta', 'maxima'] as Quality[]).map(q => (
+                    <button
+                      key={q}
+                      onClick={() => !processing && setQuality(q)}
+                      disabled={processing}
+                      className={`px-2 py-2 rounded-lg text-xs font-medium transition-all border ${
+                        quality === q
+                          ? 'bg-indigo-500/10 border-indigo-500/50 text-indigo-600 dark:text-indigo-400'
+                          : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200 dark:hover:bg-white/10'
+                      } disabled:opacity-50`}
+                    >
+                      {qualityLabels[q]}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -289,7 +426,35 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
             </div>
           )}
 
-          {/* Stem count */}
+          {/* RoFormer model selector */}
+          {backend === 'roformer' && (
+            <div>
+              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
+                {t('stemModel')}
+              </label>
+              <select
+                value={roformerModel}
+                onChange={(e) => setRoformerModel(e.target.value)}
+                disabled={processing}
+                className="w-full px-3 py-2 rounded-lg text-sm bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 text-zinc-900 dark:text-white disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-emerald-500/50"
+              >
+                {ROFORMER_MODELS.map(m => (
+                  <option key={m.name} value={m.name}>
+                    {m.description}{m.badge ? ` ★` : ''}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-2 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+                <AlertTriangle size={14} className="text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-[11px] text-amber-300/90">
+                  {t('stemRoformerDownloadNote')}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Stem count (hidden for roformer — only 2-stem) */}
+          {backend !== 'roformer' && (
           <div>
             <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-2">
               Stems
@@ -320,6 +485,7 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
               </button>
             </div>
           </div>
+          )}
 
           {/* Error */}
           {error && (
@@ -410,7 +576,7 @@ export const StemSeparationModal: React.FC<StemSeparationModalProps> = ({ isOpen
               </button>
               <button
                 onClick={handleSeparate}
-                disabled={processing || !song.audioUrl}
+                disabled={processing || !song.audioUrl || !backendReady}
                 className="flex-1 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-600/50 text-white text-sm font-medium rounded-xl transition-colors flex items-center justify-center gap-2 disabled:cursor-not-allowed"
               >
                 {processing ? (
