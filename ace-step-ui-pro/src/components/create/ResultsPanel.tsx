@@ -21,10 +21,11 @@ interface ResultsPanelProps {
   onSelectSong?: (song: Song) => void;
   onRenameSong?: (id: string, newTitle: string) => void;
   onLikeSong?: (id: string) => void;
+  onCancelGeneration?: (jobId: string) => void;
   audioRef?: React.RefObject<HTMLAudioElement>;
 }
 
-export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, audioRef }: ResultsPanelProps) {
+export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, onCancelGeneration, audioRef }: ResultsPanelProps) {
   const { t } = useTranslation();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(getInitPageSize);
@@ -126,6 +127,7 @@ export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPla
             onSelect={onSelectSong ? () => onSelectSong(song) : undefined}
             onRename={onRenameSong ? (newTitle: string) => onRenameSong(song.id, newTitle) : undefined}
             onLike={onLikeSong ? () => onLikeSong(song.id) : undefined}
+            onCancelGeneration={onCancelGeneration && song.isGenerating ? () => onCancelGeneration(song.id) : undefined}
             audioRef={audioRef}
           />
         ))}

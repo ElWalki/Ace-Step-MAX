@@ -311,6 +311,16 @@ export default function App() {
     };
   }, []);
 
+  // ─── Cancel generation job ───
+  const cancelGeneration = useCallback(async (jobId: string) => {
+    if (!token) return;
+    try {
+      await generateApi.cancelJob(jobId, token);
+    } catch { /* best-effort */ }
+    cleanupJob(jobId);
+    showToast(t('create.cancelled', 'Generation cancelled'), 'info');
+  }, [token, cleanupJob, showToast, t]);
+
   // ─── Explore → Create style ───
   const handleSelectStyle = useCallback((style: string) => {
     setCurrentView('create');
@@ -555,6 +565,7 @@ export default function App() {
             onSelectSong={setDetailSong}
             onRenameSong={renameSong}
             onLikeSong={toggleLike}
+            onCancelGeneration={cancelGeneration}
             audioRef={audioRef}
           />
         </div>
@@ -581,6 +592,7 @@ export default function App() {
           onSelectSong={setDetailSong}
           onRenameSong={renameSong}
           onLikeSong={toggleLike}
+          onCancelGeneration={cancelGeneration}
           audioRef={audioRef}
         />
         {detailSong && (

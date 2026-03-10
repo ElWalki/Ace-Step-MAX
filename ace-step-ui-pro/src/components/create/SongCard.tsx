@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Music, Play, Pause, Loader2, ThumbsUp, ThumbsDown, Share2, Video, ListPlus, MoreVertical, Disc3, Copy, Check, Scissors, ExternalLink } from 'lucide-react';
+import { Music, Play, Pause, Loader2, ThumbsUp, ThumbsDown, Share2, Video, ListPlus, MoreVertical, Disc3, Copy, Check, Scissors, ExternalLink, X } from 'lucide-react';
 import type { Song } from '../../types';
 import SongContextMenu from '../ui/SongContextMenu';
 import { getCoverStyle } from '../../utils/coverArt';
@@ -27,6 +27,7 @@ interface SongCardProps {
   onLike?: () => void;
   audioRef?: React.RefObject<HTMLAudioElement>;
   onCopySeed?: (seed: number) => void;
+  onCancelGeneration?: () => void;
 }
 
 // Deterministic avatar color from string
@@ -216,7 +217,7 @@ function MiniWaveform({ songId, isPlaying, isCurrent, audioUrl, audioRef }: {
   );
 }
 
-export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDelete, onMenuAction, onSelect, onRename, onLike, audioRef, onCopySeed }: SongCardProps) {
+export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDelete, onMenuAction, onSelect, onRename, onLike, audioRef, onCopySeed, onCancelGeneration }: SongCardProps) {
   const { t } = useTranslation();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [isEditing, setIsEditing] = useState(false);
@@ -327,8 +328,15 @@ export default memo(function SongCard({ song, isPlaying, isCurrent, onPlay, onDe
             </div>
           )}
           {song.isGenerating ? (
-            <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-              <Loader2 className="w-5 h-5 text-white animate-spin" />
+            <div
+              className="absolute inset-0 bg-black/60 flex items-center justify-center cursor-pointer group/cancel"
+              onClick={(e) => { e.stopPropagation(); onCancelGeneration?.(); }}
+              title="Cancel generation"
+            >
+              <div className="relative w-7 h-7 flex items-center justify-center">
+                <Loader2 className="w-5 h-5 text-white/60 animate-spin absolute transition-opacity group-hover/cancel:opacity-0" />
+                <X className="w-5 h-5 text-red-400 absolute opacity-0 transition-opacity group-hover/cancel:opacity-100" />
+              </div>
             </div>
           ) : (
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/45 flex items-center justify-center transition-colors">
