@@ -177,10 +177,15 @@ function MiniWaveform({ songId, isPlaying, isCurrent, audioUrl, audioRef }: {
     const onTime = () => { if (isCurrent && !activeRef.current) draw(); };
     audio?.addEventListener('timeupdate', onTime);
 
+    // Redraw on resize (e.g. panel drag changes canvas width)
+    const ro = new ResizeObserver(() => draw());
+    ro.observe(canvas);
+
     return () => {
       activeRef.current = false;
       cancelAnimationFrame(rafRef.current);
       audio?.removeEventListener('timeupdate', onTime);
+      ro.disconnect();
     };
   }, [songId, isPlaying, isCurrent, audioRef, bars, audioBuffer]);
 
