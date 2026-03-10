@@ -152,6 +152,13 @@ export default function App() {
 
     setCurrentSong(song);
 
+    // Track play count
+    if (token && !song.id.startsWith('temp_')) {
+      songsApi.trackPlay(song.id, token).then(res => {
+        setSongs(prev => prev.map(s => s.id === song.id ? { ...s, viewCount: res.viewCount } : s));
+      }).catch(() => {});
+    }
+
     const url = song.audioUrl?.startsWith('http') ? song.audioUrl : song.audioUrl ? song.audioUrl : `/api/songs/${song.id}/audio`;
     try {
       audio.src = url;
@@ -159,7 +166,7 @@ export default function App() {
     } catch {
       setIsPlaying(false);
     }
-  }, [currentSong]);
+  }, [currentSong, token]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;

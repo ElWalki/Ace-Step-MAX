@@ -8,7 +8,7 @@ import PaginationBar from '../ui/PaginationBar';
 const LS_PAGE_SIZE = 'ace-results-pageSize';
 const getInitPageSize = () => { try { return Number(localStorage.getItem(LS_PAGE_SIZE)) || 20; } catch { return 20; } };
 
-type SortKey = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc';
+type SortKey = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'plays-desc' | 'plays-asc';
 type FilterKey = 'all' | 'liked' | 'disliked';
 
 interface ResultsPanelProps {
@@ -50,6 +50,8 @@ export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPla
       case 'date-asc': list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()); break;
       case 'name-asc': list.sort((a, b) => (a.title || '').localeCompare(b.title || '')); break;
       case 'name-desc': list.sort((a, b) => (b.title || '').localeCompare(a.title || '')); break;
+      case 'plays-desc': list.sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0)); break;
+      case 'plays-asc': list.sort((a, b) => (a.viewCount || 0) - (b.viewCount || 0)); break;
     }
     return list;
   }, [songs, sortKey, filterKey]);
@@ -75,6 +77,8 @@ export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPla
     { key: 'date-asc', label: t('sort.oldest', 'Oldest'), icon: <SortAsc className="w-3 h-3" /> },
     { key: 'name-asc', label: 'A → Z', icon: <SortAsc className="w-3 h-3" /> },
     { key: 'name-desc', label: 'Z → A', icon: <SortDesc className="w-3 h-3" /> },
+    { key: 'plays-desc', label: t('sort.mostPlayed', 'Most played'), icon: <SortDesc className="w-3 h-3" /> },
+    { key: 'plays-asc', label: t('sort.leastPlayed', 'Least played'), icon: <SortAsc className="w-3 h-3" /> },
   ];
 
   const filterOptions: { key: FilterKey; label: string; icon: React.ReactNode }[] = [

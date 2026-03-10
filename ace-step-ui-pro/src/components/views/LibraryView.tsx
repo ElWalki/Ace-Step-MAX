@@ -9,7 +9,7 @@ import { getCoverStyle } from '../../utils/coverArt';
 const LS_PAGE_SIZE = 'ace-library-pageSize';
 const getInitPageSize = () => { try { return Number(localStorage.getItem(LS_PAGE_SIZE)) || 20; } catch { return 20; } };
 
-type SortKey = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc';
+type SortKey = 'date-desc' | 'date-asc' | 'name-asc' | 'name-desc' | 'plays-desc' | 'plays-asc';
 type FilterKey = 'all' | 'liked' | 'disliked';
 
 interface LibraryViewProps {
@@ -63,6 +63,8 @@ export default function LibraryView({ songs, currentSong, isPlaying, onPlaySong,
       case 'date-asc': list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()); break;
       case 'name-asc': list.sort((a, b) => (a.title || '').localeCompare(b.title || '')); break;
       case 'name-desc': list.sort((a, b) => (b.title || '').localeCompare(a.title || '')); break;
+      case 'plays-desc': list.sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0)); break;
+      case 'plays-asc': list.sort((a, b) => (a.viewCount || 0) - (b.viewCount || 0)); break;
     }
 
     return list;
@@ -83,6 +85,8 @@ export default function LibraryView({ songs, currentSong, isPlaying, onPlaySong,
     { key: 'date-asc', label: t('sort.oldest', 'Oldest') },
     { key: 'name-asc', label: 'A → Z' },
     { key: 'name-desc', label: 'Z → A' },
+    { key: 'plays-desc', label: t('sort.mostPlayed', 'Most played') },
+    { key: 'plays-asc', label: t('sort.leastPlayed', 'Least played') },
   ];
 
   return (

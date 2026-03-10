@@ -108,9 +108,11 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
       `SELECT s.id, s.title, s.lyrics, s.style, s.caption, s.cover_url, s.audio_url,
               s.duration, s.bpm, s.key_scale, s.time_signature, s.tags, s.is_public, 
               s.like_count, s.view_count, s.user_id, s.created_at, s.generation_params,
-              COALESCE(u.username, 'Anonymous') as creator
+              COALESCE(u.username, 'Anonymous') as creator,
+              CASE WHEN ls.song_id IS NOT NULL THEN 1 ELSE 0 END as liked
        FROM songs s
        LEFT JOIN users u ON s.user_id = u.id
+       LEFT JOIN liked_songs ls ON ls.song_id = s.id AND ls.user_id = $1
        WHERE s.user_id = $1
        ORDER BY s.created_at DESC`,
       [req.user!.id]

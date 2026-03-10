@@ -47,6 +47,7 @@ function mapSong(s: any): any {
     isPublic: s.is_public ?? s.isPublic,
     likeCount: s.like_count ?? s.likeCount ?? 0,
     viewCount: s.view_count ?? s.viewCount ?? 0,
+    liked: s.liked === 1 || s.liked === true || undefined,
     userId: s.user_id || s.userId,
     ditModel: generationParams?.ditModel || s.ditModel,
     generationParams,
@@ -72,6 +73,8 @@ export const songsApi = {
     api<{ liked: boolean }>(`/api/songs/${id}/like`, { method: 'POST', token }),
   updateSong: (id: string, updates: Record<string, unknown>, token: string) =>
     api(`/api/songs/${id}`, { method: 'PATCH', body: updates, token }),
+  trackPlay: (id: string, token?: string | null) =>
+    api<{ viewCount: number }>(`/api/songs/${id}/play`, { method: 'POST', token: token || undefined }),
 };
 
 export const generateApi = {
