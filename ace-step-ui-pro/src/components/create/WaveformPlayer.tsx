@@ -13,6 +13,7 @@ interface WaveformPlayerProps {
 export default function WaveformPlayer({
   src, title, regionMode, regionStart = 0, regionEnd = 1, onRegionChange,
 }: WaveformPlayerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [peaks, setPeaks] = useState<number[] | null>(null);
@@ -76,16 +77,19 @@ export default function WaveformPlayer({
     return () => { cancelled = true; };
   }, [src]);
 
-  // Sync canvas resolution with element size via ResizeObserver
+  // Sync canvas resolution with container size via ResizeObserver
+  // Observe the wrapper div, NOT the canvas — avoids feedback loop where
+  // setting canvas.width changes its intrinsic size, triggering another resize.
   useEffect(() => {
+    const container = containerRef.current;
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!container || !canvas) return;
     const dpr = window.devicePixelRatio || 1;
     const syncSize = () => {
-      const rect = canvas.getBoundingClientRect();
+      const rect = container.getBoundingClientRect();
       const w = Math.round(rect.width);
       const h = Math.round(rect.height);
-      if (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h) {
+      if (w > 0 && h > 0 && (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h)) {
         canvas.width = w * dpr;
         canvas.height = h * dpr;
         canvasSizeRef.current = { w, h };
@@ -93,7 +97,7 @@ export default function WaveformPlayer({
     };
     syncSize();
     const ro = new ResizeObserver(syncSize);
-    ro.observe(canvas);
+    ro.observe(container);
     return () => ro.disconnect();
   }, [peaks]);
 
@@ -296,9 +300,11 @@ export default function WaveformPlayer({
         {peaks === null ? (
           <div className="flex-1 h-10 rounded bg-surface-100 animate-pulse" />
         ) : (
-          <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
-            className={`flex-1 h-10 rounded ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}
-          />
+          <div ref={containerRef} className={`flex-1 min-w-0 h-10 rounded ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
+            <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
+              className="w-full h-full block"
+            />
+          </div>
         )}
       </div>
       <div className="flex items-center justify-between px-1">
