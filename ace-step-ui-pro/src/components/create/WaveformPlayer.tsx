@@ -77,17 +77,27 @@ export default function WaveformPlayer({
     return () => { cancelled = true; };
   }, [src]);
 
-  // Pure draw function — reads from refs, no state dependencies
+  // Pure draw function — reads container dimensions directly each frame
+  // to guarantee canvas buffer always matches the visible layout.
   const draw = useCallback(() => {
+    const container = containerRef.current;
     const canvas = canvasRef.current;
     const pk = peaksRef.current;
-    if (!canvas || !pk || pk.length === 0) return;
+    if (!container || !canvas || !pk || pk.length === 0) return;
     const c = canvas.getContext('2d');
     if (!c) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const { w, h } = canvasSizeRef.current;
+    const w = container.offsetWidth;
+    const h = container.offsetHeight;
     if (w === 0 || h === 0) return;
+
+    // Re-sync canvas buffer when container size changes
+    if (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvasSizeRef.current = { w, h };
+    }
 
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.clearRect(0, 0, w, h);
@@ -158,32 +168,6 @@ export default function WaveformPlayer({
     }
   }, []);
 
-  // Sync canvas resolution with container size via ResizeObserver
-  // Observe the wrapper div, NOT the canvas — avoids feedback loop where
-  // setting canvas.width changes its intrinsic size, triggering another resize.
-  useEffect(() => {
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const syncSize = () => {
-      const rect = container.getBoundingClientRect();
-      const w = Math.round(rect.width);
-      const h = Math.round(rect.height);
-      if (w > 0 && h > 0 && (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h)) {
-        canvas.width = w * dpr;
-        canvas.height = h * dpr;
-        canvasSizeRef.current = { w, h };
-        // Redraw immediately so waveform matches the new size
-        draw();
-      }
-    };
-    syncSize();
-    const ro = new ResizeObserver(syncSize);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [peaks, draw]);
-
   // rAF loop — separate from draw, guarded by activeRef
   useEffect(() => {
     if (!peaks || peaks.length === 0) return;
@@ -223,7 +207,7 @@ export default function WaveformPlayer({
   // Seek on click (non-region mode)
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (dragging || regionMode) return;
-    const rect = canvasRef.current?.getBoundingClientRect();
+    const rect = containerRef.current?.getBoundingClientRect();
     const a = audioRef.current;
     if (!rect || !a) return;
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -236,7 +220,7 @@ export default function WaveformPlayer({
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (regionMode) {
       // Region handle drag
-      const rect = canvasRef.current?.getBoundingClientRect();
+      const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const pct = (e.clientX - rect.left) / rect.width;
       const ds = Math.abs(pct - regionStart);
@@ -248,7 +232,7 @@ export default function WaveformPlayer({
       return;
     }
     // Non-region: drag-to-seek playback position
-    const rect = canvasRef.current?.getBoundingClientRect();
+    const rect = containerRef.current?.getBoundingClientRect();
     const a = audioRef.current;
     if (!rect || !a || !a.duration) return;
     e.preventDefault();
@@ -274,7 +258,7 @@ export default function WaveformPlayer({
   useEffect(() => {
     if (!dragging) return;
     const move = (e: MouseEvent) => {
-      const rect = canvasRef.current?.getBoundingClientRect();
+      const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       if (dragging === 'start') onRegionChange?.(Math.min(pct, regionEnd - 0.02), regionEnd);
