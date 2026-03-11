@@ -77,30 +77,6 @@ export default function WaveformPlayer({
     return () => { cancelled = true; };
   }, [src]);
 
-  // Sync canvas resolution with container size via ResizeObserver
-  // Observe the wrapper div, NOT the canvas — avoids feedback loop where
-  // setting canvas.width changes its intrinsic size, triggering another resize.
-  useEffect(() => {
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
-    if (!container || !canvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    const syncSize = () => {
-      const rect = container.getBoundingClientRect();
-      const w = Math.round(rect.width);
-      const h = Math.round(rect.height);
-      if (w > 0 && h > 0 && (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h)) {
-        canvas.width = w * dpr;
-        canvas.height = h * dpr;
-        canvasSizeRef.current = { w, h };
-      }
-    };
-    syncSize();
-    const ro = new ResizeObserver(syncSize);
-    ro.observe(container);
-    return () => ro.disconnect();
-  }, [peaks]);
-
   // Pure draw function — reads from refs, no state dependencies
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -181,6 +157,32 @@ export default function WaveformPlayer({
       }
     }
   }, []);
+
+  // Sync canvas resolution with container size via ResizeObserver
+  // Observe the wrapper div, NOT the canvas — avoids feedback loop where
+  // setting canvas.width changes its intrinsic size, triggering another resize.
+  useEffect(() => {
+    const container = containerRef.current;
+    const canvas = canvasRef.current;
+    if (!container || !canvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    const syncSize = () => {
+      const rect = container.getBoundingClientRect();
+      const w = Math.round(rect.width);
+      const h = Math.round(rect.height);
+      if (w > 0 && h > 0 && (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h)) {
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvasSizeRef.current = { w, h };
+        // Redraw immediately so waveform matches the new size
+        draw();
+      }
+    };
+    syncSize();
+    const ro = new ResizeObserver(syncSize);
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [peaks, draw]);
 
   // rAF loop — separate from draw, guarded by activeRef
   useEffect(() => {
@@ -300,9 +302,9 @@ export default function WaveformPlayer({
         {peaks === null ? (
           <div className="flex-1 h-10 rounded bg-surface-100 animate-pulse" />
         ) : (
-          <div ref={containerRef} className={`flex-1 min-w-0 h-10 rounded ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
+          <div ref={containerRef} className={`flex-1 min-w-0 h-10 rounded overflow-hidden relative ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
             <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
-              className="w-full h-full block"
+              className="absolute inset-0 w-full h-full"
             />
           </div>
         )}
