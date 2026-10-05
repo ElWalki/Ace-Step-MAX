@@ -292,6 +292,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       return fetchedModels.map(m => ({ id: m.name, name: m.name }));
     }
     return [
+      { id: 'acestep-v15-xl-base', name: 'acestep-v15-xl-base' },
+      { id: 'acestep-v15-xl-sft', name: 'acestep-v15-xl-sft' },
+      { id: 'acestep-v15-xl-turbo', name: 'acestep-v15-xl-turbo' },
       { id: 'acestep-v15-base', name: 'acestep-v15-base' },
       { id: 'acestep-v15-sft', name: 'acestep-v15-sft' },
       { id: 'acestep-v15-turbo', name: 'acestep-v15-turbo' },
@@ -304,6 +307,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   // Map model ID to short display name
   const getModelDisplayName = (modelId: string): string => {
     const mapping: Record<string, string> = {
+      'acestep-v15-xl-base': '1.5XL Base',
+      'acestep-v15-xl-sft': '1.5XL SFT',
+      'acestep-v15-xl-turbo': '1.5XL Turbo',
       'acestep-v15-base': '1.5B',
       'acestep-v15-sft': '1.5S',
       'acestep-v15-turbo-shift1': '1.5TS1',

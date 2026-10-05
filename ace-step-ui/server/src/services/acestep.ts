@@ -201,12 +201,35 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
     }
   }
 
+  // Master switch (advanced mode): force a clean text→music generation, ignoring any
+  // reference/cover/source audio still loaded in the UI. Guarantees no hidden audio
+  // conditioning leaks into the result.
+  const ignoreAudio = params.ignoreAudioInput === true;
+
   // Prepare audio files (async — reads from disk)
-  const referenceAudio = await prepareAudioFile(params.referenceAudioUrl);
-  const sourceAudio = await prepareAudioFile(params.sourceAudioUrl);
+  const referenceAudio = ignoreAudio ? null : await prepareAudioFile(params.referenceAudioUrl);
+  const sourceAudio = ignoreAudio ? null : await prepareAudioFile(params.sourceAudioUrl);
 
   // CoT features are gated by enhance OR thinking (either enables LLM enrichment)
   const useCot = isEnhance || isThinking;
+
+  // Seed handling: the UI rolls a concrete seed per generation when "random" is on (single
+  // items), so we usually receive an explicit seed to send and record. When we still get no
+  // seed (random multi-item batches, or a direct API call), defer to engine-side random
+  // seeding (-1) so each item varies.
+  const wantRandom = params.randomSeed !== false;
+  const userSeed = params.seed != null && Number(params.seed) > 0 ? Math.floor(Number(params.seed)) : 0;
+  const useEngineRandom = wantRandom && userSeed === 0;
+
+  // Position 18 (audio_cover_strength) doubles as the reference "inspiration"
+  // strength for pure text2music + reference audio. The Python handler re-clamps
+  // the cover value to 1.0 for text2music (the cover branch would crash otherwise)
+  // but first captures it as the reference blend strength. For real cover/repaint
+  // tasks it keeps its original cover meaning.
+  const isCoverish = !ignoreAudio && (params.taskType === 'cover' || params.taskType === 'repaint' || !!params.sourceAudioUrl);
+  const strengthArg18 = isCoverish
+    ? (params.audioCoverStrength ?? 1.0)
+    : (!ignoreAudio && params.referenceAudioUrl ? (params.referenceStrength ?? 1.0) : (params.audioCoverStrength ?? 1.0));
 
   return [
     prompt,                                                       //  0: Music Caption
@@ -217,8 +240,8 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
     params.vocalLanguage || 'en',                                 //  5: Vocal Language
     params.inferenceSteps ?? 8,                                   //  6: DiT Inference Steps
     params.guidanceScale ?? 7.0,                                  //  7: DiT Guidance Scale
-    params.randomSeed !== false,                                  //  8: Random Seed
-    String(params.seed ?? -1),                                    //  9: Seed
+    useEngineRandom,                                             //  8: Random Seed (false → use the explicit seed below)
+    String(useEngineRandom ? -1 : userSeed),                     //  9: Seed (concrete, recorded & reproducible)
     referenceAudio,                                               // 10: Reference Audio (filepath | null)
     duration,                                                       // 11: Audio Duration (-1 = auto, measure-aligned if enabled)
     Math.min(Math.max(params.batchSize ?? 1, 1), 16),            // 12: Batch Size (clamped 1-16)
@@ -227,8 +250,8 @@ async function buildGradioArgs(params: GenerationParams): Promise<unknown[]> {
     params.repaintingStart ?? 0.0,                                // 15: Repainting Start
     params.repaintingEnd ?? -1,                                   // 16: Repainting End
     params.instruction || 'Fill the audio semantic mask with the style described in the text prompt.', // 17: Instruction
-    params.audioCoverStrength ?? 1.0,                             // 18: LM Codes Strength
-    params.taskType || 'text2music',                              // 19: Task Type
+    strengthArg18,                                               // 18: LM Codes Strength (also reference inspiration strength for text2music)
+    ignoreAudio ? 'text2music' : (params.taskType || 'text2music'), // 19: Task Type
     params.useAdg ?? false,                                       // 20: Use ADG
     params.cfgIntervalStart ?? 0.0,                               // 21: CFG Interval Start
     params.cfgIntervalEnd ?? 1.0,                                 // 22: CFG Interval End
@@ -304,6 +327,94 @@ async function downloadGradioAudioFile(
   throw new Error('Gradio file object has neither path nor url');
 }
 
+/**
+ * Splice a repainted segment into the ORIGINAL audio to avoid generational loss.
+ *
+ * Why: on repaint the model keeps the unmasked latents but the WHOLE latent is re-decoded
+ * through the VAE, so every repaint pass slightly degrades even the untouched audio.
+ * By keeping the original file outside [startSec, endSec] and inserting only the new
+ * segment (40 ms equal-power crossfades at the seams), repeated edits no longer degrade
+ * the rest of the track.
+ *
+ * Returns true if the splice succeeded (newPath overwritten with the spliced audio).
+ */
+function spliceRepaintedAudio(
+  originalPath: string,
+  newPath: string,
+  startSec: number,
+  endSec: number,
+): boolean {
+  try {
+    if (!existsSync(originalPath) || !existsSync(newPath)) return false;
+
+    const origDur = getAudioDurationFloat(originalPath);
+    const newDur = getAudioDurationFloat(newPath);
+    if (origDur <= 0 || newDur <= 0) return false;
+
+    const XF = 0.04; // 40ms crossfade
+    const start = Math.max(0, Math.min(startSec, origDur));
+    const end = Math.min(endSec <= 0 ? origDur : endSec, origDur, newDur);
+    if (end - start < XF * 3) return false; // region too small to splice safely
+
+    const ext = path.extname(newPath);
+    const tmpOut = newPath.replace(ext, `.spliced${ext}`);
+    const codecArgs = ext === '.flac' ? '-c:a flac' : ext === '.wav' ? '-c:a pcm_s16le' : '-c:a libmp3lame -b:a 320k';
+
+    const hasPre = start > XF;
+    const hasPost = end < origDur - XF;
+
+    let filter = '';
+    if (hasPre && hasPost) {
+      filter =
+        `[0:a]atrim=0:${start.toFixed(3)},asetpts=PTS-STARTPTS[pre];` +
+        `[1:a]atrim=${Math.max(0, start - XF).toFixed(3)}:${end.toFixed(3)},asetpts=PTS-STARTPTS[mid];` +
+        `[0:a]atrim=${Math.max(0, end - XF).toFixed(3)},asetpts=PTS-STARTPTS[post];` +
+        `[pre][mid]acrossfade=d=${XF}:c1=tri:c2=tri[pm];` +
+        `[pm][post]acrossfade=d=${XF}:c1=tri:c2=tri[out]`;
+    } else if (hasPre) {
+      filter =
+        `[0:a]atrim=0:${start.toFixed(3)},asetpts=PTS-STARTPTS[pre];` +
+        `[1:a]atrim=${Math.max(0, start - XF).toFixed(3)},asetpts=PTS-STARTPTS[mid];` +
+        `[pre][mid]acrossfade=d=${XF}:c1=tri:c2=tri[out]`;
+    } else if (hasPost) {
+      filter =
+        `[1:a]atrim=0:${end.toFixed(3)},asetpts=PTS-STARTPTS[mid];` +
+        `[0:a]atrim=${Math.max(0, end - XF).toFixed(3)},asetpts=PTS-STARTPTS[post];` +
+        `[mid][post]acrossfade=d=${XF}:c1=tri:c2=tri[out]`;
+    } else {
+      return false; // repainting the whole clip — nothing to preserve
+    }
+
+    execSync(
+      `ffmpeg -y -i "${originalPath}" -i "${newPath}" -filter_complex "${filter}" -map "[out]" ${codecArgs} "${tmpOut}"`,
+      { timeout: 120000, stdio: 'pipe' },
+    );
+
+    if (!existsSync(tmpOut)) return false;
+    execSync(process.platform === 'win32' ? `move /y "${tmpOut}" "${newPath}"` : `mv -f "${tmpOut}" "${newPath}"`, {
+      timeout: 10000, stdio: 'pipe', shell: process.platform === 'win32' ? 'cmd.exe' : undefined,
+    });
+    return true;
+  } catch (e) {
+    console.warn('[splice] Failed, keeping full re-decoded audio:', e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
+// Duration with sub-second precision (getAudioDuration rounds to int)
+function getAudioDurationFloat(filePath: string): number {
+  try {
+    const result = execSync(
+      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`,
+      { encoding: 'utf-8', timeout: 10000 }
+    );
+    const duration = parseFloat(result.trim());
+    return isNaN(duration) ? 0 : duration;
+  } catch {
+    return 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Generation types & interfaces (unchanged public API)
 // ---------------------------------------------------------------------------
@@ -361,6 +472,8 @@ export interface GenerationParams {
   repaintingEnd?: number;
   instruction?: string;
   audioCoverStrength?: number;
+  referenceStrength?: number;
+  ignoreAudioInput?: boolean;
   taskType?: string;
   useAdg?: boolean;
   cfgIntervalStart?: number;
@@ -399,8 +512,21 @@ export interface GenerationParams {
   loraTriggerTag?: string;
   loraTagPosition?: string;
 
+  // Multi-region repaint: sequential chain, each region with its own overrides
+  repaintRegions?: RepaintRegion[];
+
   // Model selection
   ditModel?: string;
+}
+
+export interface RepaintRegion {
+  start: number;            // seconds
+  end: number;              // seconds
+  style?: string;           // per-region prompt override
+  lyrics?: string;          // per-region lyrics override
+  loraPath?: string;        // per-region LoRA override (falls back to job-level LoRA)
+  loraName?: string;
+  loraScale?: number;
 }
 
 interface GenerationResult {
@@ -436,6 +562,9 @@ interface ActiveJob {
   progress?: number;
   stage?: string;
   cancelled?: boolean;
+  // Multi-region chain: maps each region's 0-100 progress into its slice of the bar
+  progressBase?: number;
+  progressScale?: number;
 }
 
 const activeJobs = new Map<string, ActiveJob>();
@@ -568,9 +697,13 @@ export function cancelJob(jobId: string): { success: boolean; message: string } 
     });
   }
 
-  // If was running, reset Gradio client to force-interrupt the predict call
+  // If was running, abort the Python-side diffusion loop, then reset the client
   if (wasRunning) {
-    console.log(`[Cancel] Job ${jobId}: Resetting Gradio client to interrupt generation`);
+    console.log(`[Cancel] Job ${jobId}: Aborting in-flight generation on Python side`);
+    fetch(`${ACESTEP_API}/v1/generation_cancel`, { method: 'POST', signal: AbortSignal.timeout(5000) })
+      .then(r => r.json())
+      .then(j => console.log(`[Cancel] Python cancel: ${JSON.stringify(j?.data ?? j)}`))
+      .catch(e => console.warn(`[Cancel] Python cancel failed (falling back to client reset): ${e?.message || e}`));
     resetGradioClient();
     // Purge VRAM to clean up residual tensors from interrupted generation
     autoPurgeVram();
@@ -678,10 +811,22 @@ async function processGeneration(
   const gradioUp = await isGradioAvailable();
   if (gradioUp) {
     try {
-      await processGenerationViaGradio(jobId, params, job);
+      // Multi-region repaint: chain one repaint per region, feeding each output
+      // into the next. The splice keeps untouched audio bit-perfect throughout.
+      if (params.taskType === 'repaint' && params.repaintRegions && params.repaintRegions.length > 1) {
+        await processMultiRegionRepaint(jobId, params, job);
+      } else {
+        await processGenerationViaGradio(jobId, params, job);
+      }
       autoPurgeVram();
       return;
     } catch (error) {
+      // A cancelled job must not respawn via the Python fallback
+      if (job.cancelled) {
+        console.log(`Job ${jobId}: cancelled — skipping Python fallback`);
+        autoPurgeVram();
+        return;
+      }
       console.error(`Job ${jobId}: Gradio generation failed, trying Python spawn fallback`, error);
       // Reset client so next call reconnects (connection may be broken)
       resetGradioClient();
@@ -693,6 +838,138 @@ async function processGeneration(
   // Fallback: Python spawn
   await processGenerationViaPython(jobId, params, job);
   autoPurgeVram();
+}
+
+/**
+ * Multi-region repaint. Two strategies:
+ *  • SINGLE-PASS (all regions share the job's prompt/lyrics/LoRA): one diffusion over the
+ *    min→max span, then per-region splice — new audio inside each selection, the ORIGINAL
+ *    everywhere else (including the gaps between selections). N× faster than chaining.
+ *  • CHAIN (any region has its own prompt/lyrics/LoRA): one repaint per region, feeding
+ *    each spliced output into the next.
+ */
+async function processMultiRegionRepaint(
+  jobId: string,
+  params: GenerationParams,
+  job: ActiveJob,
+): Promise<void> {
+  const regions = [...(params.repaintRegions || [])]
+    .filter(r => isFinite(r.start) && isFinite(r.end) && r.end - r.start >= 0.15)
+    .sort((a, b) => a.start - b.start);
+  if (regions.length === 0) throw new Error('No valid repaint regions');
+
+  const n = regions.length;
+  const uniform = regions.every(r =>
+    (!r.style || !r.style.trim()) && r.lyrics === undefined && r.loraPath === undefined
+  );
+
+  if (uniform) {
+    // ── SINGLE-PASS ──
+    job.stage = `Secciones 1-${n} (una pasada)…`;
+    const spanStart = regions[0].start;
+    const spanEnd = regions[n - 1].end;
+    const regionParams = {
+      ...params,
+      repaintRegions: undefined,
+      repaintingStart: spanStart,
+      repaintingEnd: spanEnd,
+      _skipSplice: true,   // caller splices per-region below
+      _deferSuccess: true, // job must stay 'running' until the splice finishes
+    } as GenerationParams;
+
+    await processGenerationViaGradio(jobId, regionParams, job);
+    if (job.status === 'failed' || job.cancelled) return;
+    if (!job.result?.audioUrls?.length) throw new Error('Single-pass repaint produced no audio');
+
+    // Per-region splice: iterate keeping `acc` = original-so-far, pulling each region
+    // from a fresh copy of the RAW generated file (the splice overwrites its 2nd input).
+    const rawUrl = job.result.audioUrls[0];
+    const rawPath = resolveAudioPath(rawUrl);
+    const srcPath = resolveAudioPath(params.sourceAudioUrl!);
+    const ext = path.extname(rawPath);
+    let accPath = srcPath;
+    let spliceOk = true;
+    for (let i = 0; i < n; i++) {
+      const stepPath = rawPath.replace(ext, `.acc${i}${ext}`);
+      await copyFile(rawPath, stepPath);
+      const ok = spliceRepaintedAudio(accPath, stepPath, regions[i].start, regions[i].end);
+      if (!ok) {
+        console.warn(`Job ${jobId}: per-region splice failed at region ${i + 1}/${n} — keeping full union repaint`);
+        await rm(stepPath).catch(() => {});
+        spliceOk = false;
+        break;
+      }
+      if (accPath !== srcPath) await rm(accPath).catch(() => {});
+      accPath = stepPath;
+    }
+    if (spliceOk && accPath !== srcPath) {
+      await copyFile(accPath, rawPath);
+      await rm(accPath).catch(() => {});
+    }
+    job.progress = 100;
+    job.status = 'succeeded';
+    console.log(`Job ${jobId}: single-pass multi-repaint completed (${n} regions, splice=${spliceOk ? 'per-region' : 'union-fallback'})`);
+    return;
+  }
+
+  // ── CHAIN ──
+  let currentSourceUrl = params.sourceAudioUrl!;
+  let lastResult: GenerationResult | null = null;
+
+  for (let i = 0; i < n; i++) {
+    if (job.cancelled) {
+      console.log(`Job ${jobId}: multi-repaint cancelled at region ${i + 1}/${n}`);
+      return;
+    }
+    const r = regions[i];
+    job.stage = `Sección ${i + 1}/${n}…`;
+    // Scale each region's 0-100 progress into its slice of the overall bar
+    job.progressBase = Math.round((i / n) * 100);
+    job.progressScale = 1 / n;
+
+    const regionParams = {
+      ...params,
+      repaintRegions: undefined,
+      sourceAudioUrl: currentSourceUrl,
+      repaintingStart: r.start,
+      repaintingEnd: r.end,
+      style: r.style?.trim() ? r.style.trim() : params.style,
+      lyrics: r.lyrics !== undefined ? r.lyrics : params.lyrics,
+      // Per-region LoRA override (job-level LoRA used when not specified)
+      ...(r.loraPath !== undefined ? {
+        loraPath: r.loraPath,
+        loraName: r.loraName,
+        loraScale: r.loraScale ?? params.loraScale,
+        loraEnabled: !!r.loraPath,
+        loraLoaded: !!r.loraPath,
+      } : {}),
+      // Links after the first reuse the already-loaded model+LoRA (unless overridden)
+      ...(i > 0 && r.loraPath === undefined ? { _skipModelLoraSetup: true } : {}),
+      // Intermediate links must never look 'succeeded' to pollers
+      _deferSuccess: true,
+      // Distinct seed per region unless the user pinned one
+      seed: params.randomSeed === false && typeof params.seed === 'number' ? params.seed + i : undefined,
+      randomSeed: params.randomSeed !== false,
+    } as GenerationParams;
+
+    // Unique sub-id per region → unique output filenames (iteration N must never
+    // overwrite iteration N-1's file, which is its own splice source)
+    await processGenerationViaGradio(`${jobId}~r${i + 1}`, regionParams, job);
+
+    if (job.status === 'failed' || job.cancelled) return;
+    if (!job.result?.audioUrls?.length) throw new Error(`Region ${i + 1}/${n} produced no audio`);
+
+    lastResult = job.result;
+    currentSourceUrl = job.result.audioUrls[0];
+    // Status stays 'running' throughout (links defer success); final flip happens below
+  }
+
+  job.progressBase = undefined;
+  job.progressScale = undefined;
+  job.progress = 100;
+  job.status = 'succeeded';
+  if (lastResult) job.result = lastResult;
+  console.log(`Job ${jobId}: multi-repaint completed (${n} regions)`);
 }
 
 async function processGenerationViaGradio(
@@ -712,31 +989,168 @@ async function processGenerationViaGradio(
     batchSize: params.batchSize,
   });
 
-  job.stage = 'Generating music via Gradio...';
-  // If a specific DiT model was requested, ask ACE-Step API to load it first
-  if (params.ditModel) {
+  // ---------------------------------------------------------------------------
+  // Ensure the correct DiT model + LoRA are actually loaded BEFORE generating.
+  // /generation_wrapper always uses whatever model + LoRA are currently loaded
+  // server-side, so we must reconcile that state here:
+  //   • Swapping the model RE-INITIALIZES it and DISCARDS any loaded LoRA, so
+  //     the LoRA must be (re)loaded AFTER the swap — otherwise the adapter the
+  //     user selected is silently dropped and the audio sounds wrong.
+  //   • We only swap / reload when the desired state differs from the current
+  //     one, to avoid a full (slow) model reload on every generation.
+  // ---------------------------------------------------------------------------
+  job.stage = 'Preparing model & LoRA...';
+
+  // Chain links after the first reuse the exact model+LoRA state — skip the
+  // status/reload round-trip (it costs ~10s per link and can re-wrap the decoder)
+  const skipSetup = (params as GenerationParams & { _skipModelLoraSetup?: boolean })._skipModelLoraSetup === true;
+
+  // 1) Read the current server-side model + LoRA state.
+  let curModel = '';
+  let curLoraLoaded = false;
+  let curLoraPath = '';
+  let statusOk = false;
+  if (!skipSetup) try {
+    const st = await client.predict('/get_lora_status', []);
+    const s = ((st.data as unknown[])[0] || {}) as Record<string, unknown>;
+    curModel = (s.model_name as string) || '';
+    curLoraLoaded = !!s.loaded;
+    curLoraPath = (s.path as string) || '';
+    statusOk = true;
+  } catch (e) {
+    console.warn(`Job ${jobId}: could not read model/LoRA status`, e instanceof Error ? e.message : e);
+  }
+
+  // 2) Swap the DiT model only when it differs from the one already loaded.
+  //    Only act when we actually READ the current state — never swap on an unknown
+  //    (failed) status read, which would tear the model down for no reason.
+  let modelSwapped = false;
+  if (statusOk && params.ditModel && params.ditModel !== curModel) {
     try {
       const loadResp = await fetch(`${ACESTEP_API}/v1/models/load`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: params.ditModel }),
       });
-      const loadJson = await loadResp.json().catch(() => null);
+      const loadJson = await loadResp.json().catch(() => null) as { code?: number; error?: string; detail?: string } | null;
       if (!loadResp.ok || (loadJson && loadJson.code && loadJson.code !== 200)) {
-        console.warn('[ACE-Step] Failed to load requested DiT model', params.ditModel, loadJson || loadResp.status);
-        // Proceeding may still work if the model was already loaded; do not fail the whole job here.
-      } else {
-        console.log(`[ACE-Step] Requested DiT model loaded: ${params.ditModel}`);
+        const detail = (loadJson && (loadJson.error || loadJson.detail)) || `HTTP ${loadResp.status}`;
+        job.status = 'failed';
+        job.error = `No se pudo cargar el modelo DiT '${params.ditModel}': ${detail}. ` +
+          `Verifica que el checkpoint existe en checkpoints/ y está descargado.`;
+        console.error(`Job ${jobId}: ${job.error}`);
+        return;
       }
+      modelSwapped = true;
+      // Swapping the model wipes any previously loaded LoRA on the server.
+      curLoraLoaded = false;
+      curLoraPath = '';
+      console.log(`Job ${jobId}: DiT model loaded → ${params.ditModel}`);
     } catch (e) {
-      console.warn('[ACE-Step] Error requesting model load:', e);
+      job.status = 'failed';
+      job.error = `Error al cargar el modelo DiT '${params.ditModel}': ${e instanceof Error ? e.message : String(e)}`;
+      console.error(`Job ${jobId}: ${job.error}`);
+      return;
     }
   }
 
-  // predict() blocks until generation is complete
-  const result = await client.predict('/generation_wrapper', args);
-  const data = result.data as unknown[];
+  // 3) (Re)apply the LoRA AFTER the model is in place.
+  const wantLora = !skipSetup && params.loraEnabled !== false && !!params.loraPath;
+  if (wantLora) {
+    // Robustly decide whether the desired LoRA is ALREADY loaded server-side.
+    // The backend reports an OS-normalized ABSOLUTE path (Windows backslashes),
+    // while the frontend sends a relative/forward-slash path — a naive string
+    // compare (curLoraPath !== params.loraPath) is ALWAYS true on Windows, which
+    // made us tear down + deep-copy + re-wrap the whole decoder on EVERY
+    // generation. That heavy per-gen model surgery churns VRAM and can make
+    // successive generations progressively worse.
+    // Compare on a canonical form (forward slashes, lowercase). For the
+    // absolute-vs-relative case, require one FULL path to be a trailing sub-path of the
+    // other — NOT just a basename match, because different LoRAs commonly save their
+    // checkpoint folder as "epoch_400" and a basename compare would treat two different
+    // LoRAs as identical and silently refuse to switch between them.
+    const normPath = (p?: string) => (p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const sameLora = (a?: string, b?: string) => {
+      const na = normPath(a), nb = normPath(b);
+      if (!na || !nb) return false;
+      if (na === nb) return true;
+      const shorter = na.length <= nb.length ? na : nb;
+      const longer = na.length <= nb.length ? nb : na;
+      // Only a multi-segment trailing match counts (e.g. ".../walki_86_sft/checkpoints/epoch_400").
+      return shorter.includes('/') && longer.endsWith('/' + shorter);
+    };
+    const alreadyLoaded = curLoraLoaded && sameLora(curLoraPath, params.loraPath);
+    const needsLoad = modelSwapped || (statusOk && !alreadyLoaded);
+    if (needsLoad) {
+      try {
+        const lr = await client.predict('/load_lora', [params.loraPath]);
+        console.log(`Job ${jobId}: LoRA loaded → ${(lr.data as unknown[])[0]}`);
+      } catch (e) {
+        job.status = 'failed';
+        job.error = `No se pudo cargar el LoRA '${params.loraName || params.loraPath}': ${e instanceof Error ? e.message : String(e)}`;
+        console.error(`Job ${jobId}: ${job.error}`);
+        return;
+      }
+    }
+    const scale = typeof params.loraScale === 'number' ? params.loraScale : 1.0;
+    await client.predict('/set_lora_scale', [scale]).catch(() => {});
+  } else if (!skipSetup && statusOk && curLoraLoaded) {
+    // This job does NOT request a LoRA but one is still active server-side
+    // (e.g. auto-loaded by a previous repaint). Neutralize it so plain
+    // generations never silently inherit a leftover adapter. A later job that
+    // DOES request it just re-raises the scale — no reload cost.
+    console.log(`Job ${jobId}: neutralizing leftover LoRA (${curLoraPath || 'unknown path'}) — job requests none`);
+    await client.predict('/set_lora_scale', [0]).catch(() => {});
+  }
 
+  // 4) Verification: read back the REAL state so the log reflects exactly what
+  //    this generation will use (model + LoRA + key inference params).
+  try {
+    const st2 = await client.predict('/get_lora_status', []);
+    const s2 = ((st2.data as unknown[])[0] || {}) as Record<string, unknown>;
+    console.log(
+      `Job ${jobId}: [verify] model=${s2.model_name || curModel || 'default'} | ` +
+      `lora=${s2.loaded ? `${s2.name || s2.path} (active=${s2.active}, scale=${s2.scale})` : 'none'} | ` +
+      `steps=${params.inferenceSteps ?? 8} guidance=${params.guidanceScale ?? 7} shift=${params.shift ?? 3}`,
+    );
+  } catch {
+    /* verification logging only — never block generation */
+  }
+
+  job.stage = 'Generating audio…';
+  job.progress = job.progressBase ?? 0;
+
+  // Poll the REAL diffusion-step progress from the Gradio side while predict() blocks.
+  // We use predict() (not submit()) because submit() streaming a GENERATOR was dropping
+  // the audio: generation_wrapper yields several payloads and the LAST one is a UI-reset
+  // with the audio outputs cleared. predict() reliably returns the final audio result.
+  let pollActive = true;
+  const progressTimer = setInterval(() => {
+    fetch(`${ACESTEP_API}/v1/generation_status`, { signal: AbortSignal.timeout(3000) })
+      .then(r => r.json())
+      .then((j: { data?: { progress?: number; active?: boolean } } | null) => {
+        const p = j?.data?.progress;
+        // Only trust the % while diffusion is actually running — between phases the
+        // tracker may hold a stale value from the previous generation
+        if (pollActive && j?.data?.active === true && typeof p === 'number') {
+          const scaled = job.progressScale !== undefined
+            ? Math.round((job.progressBase ?? 0) + p * job.progressScale)
+            : p;
+          job.progress = Math.min(99, Math.max(job.progressBase ?? 0, scaled));
+        }
+      })
+      .catch(() => {});
+  }, 600);
+
+  let result: { data?: unknown[] };
+  try {
+    result = await client.predict('/generation_wrapper', args) as { data?: unknown[] };
+  } finally {
+    pollActive = false;
+    clearInterval(progressTimer);
+  }
+
+  const data = result.data as unknown[];
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error(`Gradio returned unexpected data format: ${typeof data}`);
   }
@@ -788,6 +1202,21 @@ async function processGenerationViaGradio(
 
     await downloadGradioAudioFile(fileObj, destPath);
 
+    // Repaint: preserve the original audio outside the edited region (anti-degradation).
+    // Skipped in single-pass multi-region mode — the caller does a per-region splice.
+    if (
+      params.taskType === 'repaint' &&
+      !(params as GenerationParams & { _skipSplice?: boolean })._skipSplice &&
+      params.sourceAudioUrl &&
+      typeof params.repaintingStart === 'number' &&
+      typeof params.repaintingEnd === 'number' &&
+      params.repaintingEnd > params.repaintingStart
+    ) {
+      const srcPath = resolveAudioPath(params.sourceAudioUrl);
+      const ok = spliceRepaintedAudio(srcPath, destPath, params.repaintingStart, params.repaintingEnd);
+      console.log(`Job ${jobId}: repaint splice ${ok ? 'applied' : 'skipped'} (${params.repaintingStart}s–${params.repaintingEnd}s)`);
+    }
+
     if (audioUrls.length === 0) {
       actualDuration = getAudioDuration(destPath);
     }
@@ -809,7 +1238,10 @@ async function processGenerationViaGradio(
     if (!isNaN(parsed)) actualSeed = parsed;
   }
 
-  job.status = 'succeeded';
+  // Orchestrated multi-region flows finish the job themselves AFTER splicing —
+  // flipping to 'succeeded' here would let pollers download the raw un-spliced file.
+  const deferSuccess = (params as GenerationParams & { _deferSuccess?: boolean })._deferSuccess === true;
+  job.status = deferSuccess ? 'running' : 'succeeded';
   job.result = {
     audioUrls,
     duration: finalDuration,

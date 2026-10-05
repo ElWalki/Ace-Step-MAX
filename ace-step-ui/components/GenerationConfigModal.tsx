@@ -15,6 +15,9 @@ interface GenerationConfigModalProps {
 const getModelLabel = (modelId?: string, unknownLabel?: string): string => {
     if (!modelId) return unknownLabel ?? 'Unknown';
     const mapping: Record<string, string> = {
+        'acestep-v15-xl-base': 'ACE-Step 1.5 XL Base',
+        'acestep-v15-xl-sft': 'ACE-Step 1.5 XL SFT',
+        'acestep-v15-xl-turbo': 'ACE-Step 1.5 XL Turbo',
         'acestep-v15-base': 'ACE-Step 1.5 Base',
         'acestep-v15-sft': 'ACE-Step 1.5 SFT',
         'acestep-v15-turbo': 'ACE-Step 1.5 Turbo',

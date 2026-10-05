@@ -22,6 +22,18 @@ export function getAudioUrl(audioUrl: string | undefined | null): string | undef
   return audioUrl;
 }
 
+/**
+ * SQLite `datetime('now')` returns UTC as `YYYY-MM-DD HH:MM:SS` (no timezone).
+ * Chrome parses that as LOCAL time, which shifts the displayed hour by the TZ offset.
+ * Convert to a proper UTC ISO string so `new Date()` renders the correct local time.
+ */
+function normalizeSqliteDate(v: any): any {
+  if (!v || typeof v !== 'string') return v;
+  if (/[TZ]|[+-]\d\d:?\d\d$/.test(v)) return v; // already has T/Z/offset
+  const m = v.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/);
+  return m ? `${m[1]}T${m[2]}${m[3] || ''}Z` : v;
+}
+
 function mapSong(s: any): any {
   const rawUrl = s.audio_url || s.audioUrl;
   const audioUrl = getAudioUrl(rawUrl);
@@ -43,7 +55,7 @@ function mapSong(s: any): any {
     audio_url: audioUrl,
     audioUrl,
     coverUrl: s.cover_url || s.coverUrl,
-    createdAt: s.created_at || s.createdAt,
+    createdAt: normalizeSqliteDate(s.created_at || s.createdAt),
     isPublic: s.is_public ?? s.isPublic,
     likeCount: s.like_count ?? s.likeCount ?? 0,
     viewCount: s.view_count ?? s.viewCount ?? 0,
@@ -143,6 +155,14 @@ export const generateApi = {
 
   getDownloadProgress: (modelName: string) =>
     api<{ status: string; progress: string; error?: string }>(`/api/generate/models/download/${encodeURIComponent(modelName)}`),
+  getModelLoadStatus: () =>
+    api<{ loading: boolean; progress: number; phase: string }>('/api/generate/models/load-status'),
+
+  // Startup model preference (auto-loaded when the server boots)
+  getStartupModel: () =>
+    api<{ preloadModel: string | null }>('/api/generate/startup-model'),
+  setStartupModel: (model: string | null, token: string) =>
+    api<{ success: boolean; preloadModel: string | null }>('/api/generate/startup-model', { method: 'POST', body: { model }, token }),
 
   // LoRA
   loadLora: (params: { lora_path: string }, token: string) =>
@@ -191,6 +211,14 @@ export const generateApi = {
     }),
   listSeparatedSongs: (token: string) =>
     api<{ songs: { baseName: string; title: string | null; stems: { name: string; url: string }[]; stemCount: number; separatedAt: string }[] }>('/api/training/separated-songs', { token }),
+};
+
+// Server-side user preferences (templates, settings) — persists across browsers and restarts
+export const preferencesApi = {
+  get: (token: string) =>
+    api<{ data: Record<string, unknown> }>('/api/preferences', { token }),
+  set: (data: Record<string, unknown>, token: string) =>
+    api<{ success: boolean }>('/api/preferences', { method: 'PUT', body: { data }, token }),
 };
 
 export interface GpuInfo {

@@ -118,7 +118,9 @@ if not exist "%LAUNCHER_DIR%" mkdir "%LAUNCHER_DIR%"
     echo @echo off
     echo title ACE-Step Gradio API
     echo cd /d "%ACESTEP_DIR%"
-    echo "%PYTHON%" -m acestep.acestep_v15_pipeline --port 8001 --enable-api --backend pt --server-name 127.0.0.1 --config_path acestep-v15-turbo
+    REM config_path intentionally omitted: the pipeline reads ACESTEP_CONFIG_PATH from .env,
+    REM which auto-updates to the last model loaded from the UI (persists your selection).
+    echo "%PYTHON%" -m acestep.acestep_v15_pipeline --port 8001 --enable-api --backend pt --server-name 127.0.0.1
     echo pause
 )
 
@@ -181,7 +183,7 @@ REM Comprobar si el puerto 8001 esta escuchando
 netstat -aon | findstr ":8001 " | findstr "LISTENING" >nul 2>&1
 if %errorlevel% equ 0 (
     REM Puerto abierto, verificar que responde HTTP
-    powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
+    powershell -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
     if %errorlevel% equ 0 (
         set READY=1
         goto GRADIO_READY

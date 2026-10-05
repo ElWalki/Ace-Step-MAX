@@ -274,7 +274,7 @@ REM Comprobar si el puerto 8001 esta escuchando
 netstat -aon | findstr ":8001 " | findstr "LISTENING" >nul 2>&1
 if %errorlevel% equ 0 (
     REM Puerto abierto, verificar que responde HTTP
-    powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
+    powershell -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
     if %errorlevel% equ 0 (
         set READY=1
         goto GRADIO_READY

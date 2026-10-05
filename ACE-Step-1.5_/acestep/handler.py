@@ -38,6 +38,107 @@ from acestep.constants import (
     DEFAULT_DIT_INSTRUCTION,
 )
 from acestep.dit_alignment_score import MusicStampsAligner, MusicLyricScorer
+
+
+# ---------------------------------------------------------------------------
+# Model-load progress (surfaced to the UI). Updated while a checkpoint loads so
+# the frontend can show a real "Loading checkpoint shards: N%" bar in real time.
+# ---------------------------------------------------------------------------
+MODEL_LOAD_PROGRESS: Dict[str, Any] = {"loading": False, "progress": 0, "phase": ""}
+
+
+@contextmanager
+def _capture_load_progress(phase: str = "Loading model"):
+    """Tee stderr while a checkpoint loads so tqdm's 'N%|' can be surfaced to the UI.
+
+    tqdm writes progress to stderr with carriage returns; we pass everything
+    through untouched and only sniff the percentage into MODEL_LOAD_PROGRESS.
+    """
+    import sys as _sys
+    _pat = re.compile(r'(\d+)%\|')
+    _orig = _sys.stderr
+
+    class _Tee:
+        def write(self, s):
+            _orig.write(s)
+            m = _pat.search(s)
+            if m:
+                try:
+                    MODEL_LOAD_PROGRESS["progress"] = int(m.group(1))
+                    MODEL_LOAD_PROGRESS["phase"] = phase
+                    MODEL_LOAD_PROGRESS["loading"] = True
+                except Exception:
+                    pass
+
+        def flush(self):
+            _orig.flush()
+
+        def __getattr__(self, name):
+            return getattr(_orig, name)
+
+    MODEL_LOAD_PROGRESS.update({"loading": True, "progress": 0, "phase": phase})
+    _sys.stderr = _Tee()
+    try:
+        yield
+    finally:
+        _sys.stderr = _orig
+
+
+# ---------------------------------------------------------------------------
+# Generation progress (diffusion steps / decoding). Surfaced to the UI so the
+# frontend can show a real-time progress bar that mirrors the console tqdm.
+# ---------------------------------------------------------------------------
+GEN_PROGRESS: Dict[str, Any] = {"active": False, "progress": 0}
+
+# Cooperative cancellation: set via /v1/generation_cancel, checked on every tqdm tick.
+GEN_CANCEL: Dict[str, Any] = {"requested": False}
+
+
+class GenerationCancelled(Exception):
+    """Raised inside the diffusion loop when the user cancels the generation."""
+
+
+@contextmanager
+def _capture_gen_progress():
+    """Tee stderr while audio generates so the diffusion/decoding tqdm 'N%|' can be
+    surfaced to the UI via GEN_PROGRESS (real-time generation bar)."""
+    import sys as _sys
+    _pat = re.compile(r'(\d+)%\|')
+    _orig = _sys.stderr
+
+    class _Tee:
+        def write(self, s):
+            _orig.write(s)
+            m = _pat.search(s)
+            if m:
+                try:
+                    GEN_PROGRESS["progress"] = int(m.group(1))
+                except Exception:
+                    pass
+            # Abort the in-flight diffusion loop as soon as a cancel is requested.
+            # tqdm calls write() on every step, so the exception unwinds generate_audio.
+            if GEN_CANCEL["requested"]:
+                GEN_CANCEL["requested"] = False
+                raise GenerationCancelled("Generation cancelled by user")
+
+        def flush(self):
+            _orig.flush()
+
+        def __getattr__(self, name):
+            return getattr(_orig, name)
+
+    # NOTE: cancel flag is reset in generate_music() so a cancel issued during the
+    # LM phase (before diffusion starts) is still honored on the first tqdm tick.
+    GEN_PROGRESS.update({"active": True, "progress": 0})
+    _sys.stderr = _Tee()
+    try:
+        yield
+    finally:
+        _sys.stderr = _orig
+        # Clear progress too — pollers must never read the previous run's 100%
+        GEN_PROGRESS.update({"active": False, "progress": 0})
+
+
 from acestep.gpu_config import get_gpu_memory_gb
 
 
@@ -100,6 +201,8 @@ class AceStepHandler:
     
     def get_available_acestep_v15_models(self) -> List[str]:
         """Scan and return all model directory names starting with 'acestep-v15-'"""
+        from acestep.model_downloader import _has_model_weights
+        from pathlib import Path as _Path
         # Get project root
         project_root = self._get_project_root()
         checkpoint_dir = os.path.join(project_root, "checkpoints")
@@ -109,7 +212,8 @@ class AceStepHandler:
             # Scan all directories starting with 'acestep-v15-' in checkpoints folder
             for item in os.listdir(checkpoint_dir):
                 item_path = os.path.join(checkpoint_dir, item)
-                if os.path.isdir(item_path) and item.startswith("acestep-v15-"):
+                # Require real weights so half-downloaded folders aren't offered
+                if os.path.isdir(item_path) and item.startswith("acestep-v15-") and _has_model_weights(_Path(item_path)):
                     models.append(item)
         
         # Sort by name
@@ -169,12 +273,22 @@ class AceStepHandler:
             current_model_name = os.path.basename(self._acestep_checkpoint_path.rstrip("/\\"))
         if not current_model_name:
             return True, ""
-        is_turbo_lora = "turbo" in base_model_name.lower()
-        is_turbo_current = "turbo" in current_model_name.lower()
-        if is_turbo_lora != is_turbo_current:
-            return False, f"⚠️ INCOMPATIBLE: LoRA trained on '{base_model_name}' but current model is '{current_model_name}'."
-        if base_model_name.lower() != current_model_name.lower():
-            return False, f"⚠️ Model mismatch: LoRA trained on '{base_model_name}', current is '{current_model_name}'."
+        # XL vs non-XL is a HARD architecture mismatch (different dims) — the adapter
+        # cannot fit and will have little or no effect. base/sft/turbo share the same
+        # architecture, so a LoRA from any of them loads and applies on the others
+        # (turbo LoRAs simply prefer fewer inference steps — that's a setting, not an
+        # incompatibility), so we do NOT warn about those.
+        is_xl_lora = "xl" in base_model_name.lower().split("-")
+        is_xl_current = "xl" in current_model_name.lower().split("-")
+        if is_xl_lora != is_xl_current:
+            return False, (f"⚠️ INCOMPATIBLE (XL vs non-XL): LoRA trained on '{base_model_name}' but current "
+                           f"model is '{current_model_name}'. Different architecture — the LoRA will NOT apply.")
+        # Same architecture but a DIFFERENT base checkpoint (e.g. an SFT LoRA on Base): it
+        # loads and applies, but it was tuned for other weights so the sound may drift. This
+        # is an informational heads-up (still "compatible"), not a hard error.
+        if base_model_name.strip().lower() != current_model_name.strip().lower():
+            return True, (f"ℹ️ This LoRA was trained on '{base_model_name}', but you have '{current_model_name}' loaded. "
+                          f"It will apply, but for the intended sound load it on '{base_model_name}'.")
         return True, ""
     
     def _count_lora_layers(self) -> Tuple[int, int]:
@@ -301,6 +415,13 @@ class AceStepHandler:
             trigger_tag = self._current_lora_metadata.get("trigger_tag", "")
             
             status_parts.append(f"✅ LoRA '{lora_name}' loaded (r={rank}, α={alpha})")
+            
+            # Warn if the LoRA was trained for a different base model (e.g. an SFT/turbo
+            # LoRA applied to an XL model won't fit → little or no effect).
+            _compatible, _compat_msg = self._check_lora_base_model_compatibility(lora_path)
+            if _compat_msg:
+                status_parts.append(_compat_msg)
+                logger.warning(f"[load_lora] {_compat_msg}")
             
             if num_lora_layers > 0:
                 params_str = f"{num_lora_params/1e6:.1f}M" if num_lora_params > 1e6 else f"{num_lora_params/1e3:.0f}K"
@@ -468,11 +589,51 @@ class AceStepHandler:
             logger.warning(f"Could not set LoRA scale: {e}")
             return f"⚠️ Scale set to {self.lora_scale:.2f} (partial)"
     
+    @staticmethod
+    def _infer_model_variant(checkpoint_path: str) -> str:
+        """Infer a human-friendly variant label from a checkpoint folder name.
+
+        Returns labels such as: "v1.5 Base", "v1.5 SFT (Fine-tuned)",
+        "v1.5 Turbo", "v1.5 Turbo (Continuous)", "v1.5 XL Turbo", etc.
+        """
+        if not checkpoint_path:
+            return ""
+        folder = os.path.basename(os.path.normpath(checkpoint_path))
+        name = folder.lower()
+        if "v15" in name or "v1.5" in name:
+            version = "v1.5"
+        elif "v2" in name:
+            version = "v2"
+        else:
+            version = ""
+        tokens = name.replace("_", "-").split("-")
+        size = "XL " if "xl" in tokens else ""
+        if "turbo" in name:
+            variant = "Turbo"
+        elif "sft" in name:
+            variant = "SFT (Fine-tuned)"
+        elif "base" in name:
+            variant = "Base"
+        else:
+            variant = folder
+        suffix = ""
+        if "continuous" in name:
+            suffix = " (Continuous)"
+        elif "shift1" in name:
+            suffix = " (Shift 1)"
+        elif "shift2" in name:
+            suffix = " (Shift 2)"
+        elif "shift3" in name:
+            suffix = " (Shift 3)"
+        parts = [p for p in [version, f"{size}{variant}".strip()] if p]
+        return (" ".join(parts) + suffix) or folder
+
     def get_lora_status(self) -> Dict[str, Any]:
-        """Get current LoRA status.
-        
+        """Get current LoRA + active model status.
+
         Returns:
-            Dictionary with LoRA status info including trigger tag
+            Dictionary with LoRA status info including trigger tag,
+            active model checkpoint path and a human-friendly variant label.
         """
         status = {
             "loaded": self.lora_loaded,
@@ -481,12 +642,30 @@ class AceStepHandler:
             "path": self._current_lora_path or "",
             "trigger_tag": self._current_lora_metadata.get("trigger_tag", ""),
             "tag_position": self._current_lora_metadata.get("tag_position", "prepend"),
+            "model_checkpoint": self._acestep_checkpoint_path or "",
+            "model_name": os.path.basename(self._acestep_checkpoint_path.rstrip("/\\")) if self._acestep_checkpoint_path else "",
+            "model_variant": self._infer_model_variant(self._acestep_checkpoint_path or ""),
         }
         if self.lora_loaded:
             status["name"] = os.path.basename(self._current_lora_path) if self._current_lora_path else ""
             status["rank"] = self._current_lora_metadata.get("rank", 0)
             status["alpha"] = self._current_lora_metadata.get("alpha", 0)
             status["target_modules"] = self._current_lora_metadata.get("target_modules", [])
+            # Which model this LoRA was trained for + whether it matches the loaded model.
+            _base = self._current_lora_metadata.get("base_model") or ""
+            status["base_model"] = os.path.basename(_base.rstrip("/\\")) if _base else ""
+            if self._current_lora_path:
+                _compatible, _msg = self._check_lora_base_model_compatibility(self._current_lora_path)
+                status["compatible"] = _compatible
+                if _msg:
+                    status["compat_warning"] = _msg
+            if self._current_lora_path:
+                normalized = os.path.normpath(self._current_lora_path)
+                parts = normalized.split(os.sep)
+                if len(parts) >= 2:
+                    status["source"] = f"{parts[-2]}/{parts[-1]}"
+                else:
+                    status["source"] = parts[-1]
         return status
     
     def initialize_service(
@@ -562,17 +741,29 @@ class AceStepHandler:
             # Auto-download models if not present
             from pathlib import Path
             checkpoint_path = Path(checkpoint_dir)
-            
+
+            # Manual model management: set ACESTEP_AUTO_DOWNLOAD=1 to re-enable auto-download.
+            # Disabled by default so the user chooses what to download from the UI.
+            auto_download = os.environ.get("ACESTEP_AUTO_DOWNLOAD", "0").strip().lower() in ("1", "true", "yes")
+
             # Check and download main model components (vae, text_encoder, default DiT)
             if not check_main_model_exists(checkpoint_path):
+                if not auto_download:
+                    return ("❌ Main model components not found in checkpoints/. "
+                            "Auto-download is disabled (ACESTEP_AUTO_DOWNLOAD=0) — "
+                            "download the main model from the UI (Settings → Model → Download)."), False
                 logger.info("[initialize_service] Main model not found, starting auto-download...")
                 success, msg = ensure_main_model(checkpoint_path)
                 if not success:
                     return f"❌ Failed to download main model: {msg}", False
                 logger.info(f"[initialize_service] {msg}")
-            
+
             # Check and download the requested DiT model
             if not check_model_exists(config_path, checkpoint_path):
+                if not auto_download:
+                    return (f"❌ DiT model '{config_path}' not found in checkpoints/. "
+                            "Auto-download is disabled (ACESTEP_AUTO_DOWNLOAD=0) — "
+                            "download it from the UI (Settings → Model → Download)."), False
                 logger.info(f"[initialize_service] DiT model '{config_path}' not found, starting auto-download...")
                 success, msg = ensure_dit_model(config_path, checkpoint_path)
                 if not success:
@@ -583,6 +774,8 @@ class AceStepHandler:
             # config_path is relative path (e.g., "acestep-v15-turbo"), concatenate to checkpoints directory
             acestep_v15_checkpoint_path = os.path.join(checkpoint_dir, config_path)
             if os.path.exists(acestep_v15_checkpoint_path):
+                # Track currently loaded model path for diagnostics and LoRA compatibility/status.
+                self._acestep_checkpoint_path = acestep_v15_checkpoint_path
                 # Determine attention implementation
                 if use_flash_attention and self.is_flash_attention_available():
                     attn_implementation = "flash_attention_2"
@@ -590,26 +783,28 @@ class AceStepHandler:
                 else:
                     attn_implementation = "sdpa"
 
-                try:
-                    logger.info(f"[initialize_service] Attempting to load model with attention implementation: {attn_implementation}")
-                    self.model = AutoModel.from_pretrained(
-                        acestep_v15_checkpoint_path, 
-                        trust_remote_code=True, 
-                        attn_implementation=attn_implementation,
-                        dtype="bfloat16"
-                    )
-                except Exception as e:
-                    logger.warning(f"[initialize_service] Failed to load model with {attn_implementation}: {e}")
-                    if attn_implementation == "sdpa":
-                        logger.info("[initialize_service] Falling back to eager attention")
-                        attn_implementation = "eager"
+                with _capture_load_progress("Loading checkpoint shards"):
+                    try:
+                        logger.info(f"[initialize_service] Attempting to load model with attention implementation: {attn_implementation}")
                         self.model = AutoModel.from_pretrained(
                             acestep_v15_checkpoint_path, 
                             trust_remote_code=True, 
-                            attn_implementation=attn_implementation
+                            attn_implementation=attn_implementation,
+                            dtype="bfloat16"
                         )
-                    else:
-                        raise e
+                    except Exception as e:
+                        logger.warning(f"[initialize_service] Failed to load model with {attn_implementation}: {e}")
+                        if attn_implementation == "sdpa":
+                            logger.info("[initialize_service] Falling back to eager attention")
+                            attn_implementation = "eager"
+                            self.model = AutoModel.from_pretrained(
+                                acestep_v15_checkpoint_path, 
+                                trust_remote_code=True, 
+                                attn_implementation=attn_implementation
+                            )
+                        else:
+                            raise e
+                MODEL_LOAD_PROGRESS.update({"loading": False, "progress": 100, "phase": "done"})
 
                 self.model.config._attn_implementation = attn_implementation
                 self.config = self.model.config
@@ -699,13 +894,37 @@ class AceStepHandler:
             status_msg += f"Compiled: {compile_model}\n"
             status_msg += f"Offload to CPU: {self.offload_to_cpu}\n"
             status_msg += f"Offload DiT to CPU: {self.offload_dit_to_cpu}"
-            
+
+            self._persist_selected_model(actual_project_root, config_path)
+
             return status_msg, True
-            
         except Exception as e:
             error_msg = f"❌ Error initializing model: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
             logger.exception("[initialize_service] Error initializing model")
             return error_msg, False
+
+    @staticmethod
+    def _persist_selected_model(project_root: str, config_path: str) -> None:
+        """Remember the loaded DiT model in .env so the next boot uses it (no CLI flag needed)."""
+        try:
+            env_path = os.path.join(project_root, ".env")
+            lines = []
+            if os.path.exists(env_path):
+                with open(env_path, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+            replaced = False
+            for i, line in enumerate(lines):
+                if line.strip().startswith("ACESTEP_CONFIG_PATH="):
+                    lines[i] = f"ACESTEP_CONFIG_PATH={config_path}"
+                    replaced = True
+                    break
+            if not replaced:
+                lines.append(f"ACESTEP_CONFIG_PATH={config_path}")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            logger.info(f"[initialize_service] Persisted selected model '{config_path}' to .env")
+        except Exception as e:
+            logger.warning(f"[initialize_service] Could not persist selected model: {e}")
     
     def _is_on_target_device(self, tensor, target_device):
         """Check if tensor is on the target device (handles cuda vs cuda:0 comparison)."""
@@ -2194,6 +2413,7 @@ class AceStepHandler:
                 refer_audio_latents.append(refer_audio_latent)
                 refer_audio_order_mask.append(batch_idx)
             else:
+                refer_strength = getattr(self, "_reference_strength", 1.0)
                 for refer_audio in refer_audios:
                     refer_audio = _normalize_audio_2d(refer_audio)
                     # Use tiled_encode for memory-efficient encoding of long audio
@@ -2204,7 +2424,24 @@ class AceStepHandler:
                     # Ensure 3D before transpose: [C, T] -> [1, C, T] -> [1, T, C]
                     if refer_audio_latent.dim() == 2:
                         refer_audio_latent = refer_audio_latent.unsqueeze(0)
-                    refer_audio_latents.append(_ensure_latent_3d(refer_audio_latent.transpose(1, 2)))
+                    refer_audio_latent = _ensure_latent_3d(refer_audio_latent.transpose(1, 2))
+                    # Blend the reference latent toward silence to control how strongly the
+                    # model is "inspired" by the reference (1.0 = full reference, 0.0 = none).
+                    # Guarded so any shape/device hiccup falls back to the full reference.
+                    if refer_strength < 1.0:
+                        try:
+                            t_len = refer_audio_latent.shape[1]
+                            sil = self.silence_latent
+                            if sil.dim() == 2:
+                                sil = sil.unsqueeze(0)
+                            if sil.shape[1] < t_len:
+                                reps = (t_len + sil.shape[1] - 1) // sil.shape[1]
+                                sil = sil.repeat(1, reps, 1)
+                            sil = sil[:, :t_len, :].to(refer_audio_latent.device).to(refer_audio_latent.dtype)
+                            refer_audio_latent = refer_strength * refer_audio_latent + (1.0 - refer_strength) * sil
+                        except Exception as e:
+                            logger.warning(f"[infer_refer_latent] reference blend skipped ({e})")
+                    refer_audio_latents.append(refer_audio_latent)
                     refer_audio_order_mask.append(batch_idx)
 
         refer_audio_latents = torch.cat(refer_audio_latents, dim=0)
@@ -2482,7 +2719,6 @@ class AceStepHandler:
             "audio_cover_strength": audio_cover_strength,
             "infer_method": infer_method,
             "infer_steps": infer_steps,
-            "diffusion_guidance_sale": guidance_scale,
             "use_adg": use_adg,
             "cfg_interval_start": cfg_interval_start,
             "cfg_interval_end": cfg_interval_end,
@@ -2491,6 +2727,16 @@ class AceStepHandler:
             "apg_momentum": apg_momentum,
             "apg_eta": apg_eta,
         }
+        # Pass CFG guidance under the correctly-spelled kwarg when the model supports it,
+        # falling back to the legacy misspelling ("...sale") for older base/sft checkpoints.
+        # This silences the deprecation warning emitted by the XL models.
+        import inspect
+        try:
+            _ga_params = inspect.signature(self.model.generate_audio).parameters
+        except (ValueError, TypeError):
+            _ga_params = {}
+        _guidance_key = "diffusion_guidance_scale" if "diffusion_guidance_scale" in _ga_params else "diffusion_guidance_sale"
+        generate_kwargs[_guidance_key] = guidance_scale
         # Add custom timesteps if provided (convert to tensor)
         if timesteps is not None:
             generate_kwargs["timesteps"] = torch.tensor(timesteps, dtype=torch.float32)
@@ -2513,7 +2759,8 @@ class AceStepHandler:
                 precomputed_lm_hints_25Hz=precomputed_lm_hints_25Hz,
             )
             
-            outputs = self.model.generate_audio(**generate_kwargs)
+            with _capture_gen_progress():
+                outputs = self.model.generate_audio(**generate_kwargs)
         
         # Add intermediate information to outputs for extra_outputs
         outputs["src_latents"] = src_latents
@@ -2920,6 +3167,9 @@ class AceStepHandler:
             def progress(*args, **kwargs):
                 pass
 
+        # New generation → clear any stale cancel request from a previous run
+        GEN_CANCEL["requested"] = False
+
         if self.model is None or self.vae is None or self.text_tokenizer is None or self.text_encoder is None:
             return {
                 "audios": [],
@@ -2966,7 +3216,11 @@ class AceStepHandler:
         #     seed = None
         if repainting_end is not None and float(repainting_end) < 0:
             repainting_end = None
-            
+
+        # Mark generation in progress so /v1/models/load refuses a hot-swap that would
+        # re-initialize the DiT mid-diffusion and corrupt the in-flight audio
+        # (produces the "ghostly / overlapping voices" artifact).
+        self._is_generating = True
         try:
             # 1. Process reference audio
             refer_audios = None
@@ -3009,6 +3263,34 @@ class AceStepHandler:
             )
             
             is_repaint_task, is_lego_task, is_cover_task, can_use_repainting = self.determine_task_type(task_type, audio_code_string)
+            
+            # audio_cover_strength < 1.0 enables a "cover-then-text" phase that only makes
+            # sense for cover/repaint tasks (which have a real source audio to cover). For
+            # pure text2music there is nothing to cover AND a value < 1.0 crashes the model's
+            # cover branch (it re-doubles the CFG tensors every step → batch-size mismatch),
+            # so force it to 1.0 here.
+            #
+            # For pure text2music WITH a reference audio we repurpose audio_cover_strength as
+            # the reference "inspiration" strength: capture it here (blended later in
+            # infer_refer_latent) and still clamp the cover value to 1.0 so the cover branch
+            # stays disabled.
+            self._reference_strength = 1.0
+            if not (is_cover_task or is_repaint_task or is_lego_task):
+                if reference_audio is not None and 0.0 <= audio_cover_strength < 1.0:
+                    self._reference_strength = float(audio_cover_strength)
+                    logger.info(f"[generate_music] Using strength={self._reference_strength} as reference inspiration blend")
+                if audio_cover_strength < 1.0:
+                    logger.info(f"[generate_music] Forcing audio_cover_strength=1.0 for text2music (was {audio_cover_strength})")
+                    audio_cover_strength = 1.0
+            elif audio_cover_strength < 1.0:
+                # Cover/repaint/lego with strength < 1.0 activates the model's "cover-then-text"
+                # phase, which has a bug: after the switch it re-doubles the CFG tensors on EVERY
+                # remaining step (context_latents grows 2→4→8…), crashing mid-generation with
+                # "Sizes of tensors must match … Expected size 4 but got size 2". Until the
+                # checkpoint modeling file is patched, force full cover strength so that buggy
+                # phase transition never runs (the cover still follows the source, with CFG).
+                logger.info(f"[generate_music] Forcing audio_cover_strength=1.0 for cover/repaint/lego (was {audio_cover_strength}) to avoid the model's cover-then-text CFG doubling bug")
+                audio_cover_strength = 1.0
             
             repainting_start_batch, repainting_end_batch, target_wavs_tensor = self.prepare_padding_info(
                 actual_batch_size,
@@ -3178,6 +3460,19 @@ class AceStepHandler:
                 "error": None,
             }
 
+        except GenerationCancelled:
+            logger.info("[generate_music] Generation cancelled by user")
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+            return {
+                "audios": [],
+                "status_message": "🛑 Generation cancelled by user",
+                "extra_outputs": {},
+                "success": False,
+                "error": "cancelled",
+            }
         except Exception as e:
             error_msg = f"❌ Error: {str(e)}\n{traceback.format_exc()}"
             logger.exception("[generate_music] Generation failed")
@@ -3188,6 +3483,8 @@ class AceStepHandler:
                 "success": False,
                 "error": str(e),
             }
+        finally:
+            self._is_generating = False
 
     @torch.no_grad()
     def get_lyric_timestamp(

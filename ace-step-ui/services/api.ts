@@ -14,6 +14,22 @@ export function getAudioUrl(audioUrl: string | undefined | null, songId?: string
   return audioUrl;
 }
 
+/**
+ * SQLite `datetime('now')` returns UTC as `YYYY-MM-DD HH:MM:SS` (no timezone).
+ * Chrome parses that as LOCAL time, shifting the displayed hour by the TZ offset.
+ * Convert to a proper UTC ISO string so `new Date()` renders the correct local time.
+ */
+export function parseServerDate(v: any): Date {
+  if (v instanceof Date) return v;
+  if (!v) return new Date();
+  if (typeof v === 'string') {
+    if (/[TZ]|[+-]\d\d:?\d\d$/.test(v)) return new Date(v);
+    const m = v.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?$/);
+    if (m) return new Date(`${m[1]}T${m[2]}${m[3] || ''}Z`);
+  }
+  return new Date(v);
+}
+
 interface ApiOptions {
   method?: string;
   body?: unknown;
@@ -173,7 +189,7 @@ export const songsApi = {
         cover_url: s.cover_url,
         coverUrl: s.cover_url || s.coverUrl || `https://picsum.photos/seed/${s.id}/400/400`,
         duration: s.duration && s.duration > 0 ? `${Math.floor(s.duration / 60)}:${String(Math.floor(s.duration % 60)).padStart(2, '0')}` : '0:00',
-        createdAt: new Date(s.created_at || s.createdAt),
+        createdAt: parseServerDate(s.created_at || s.createdAt),
         created_at: s.created_at,
         tags: s.tags || [],
         audioUrl: resolvedUrl,

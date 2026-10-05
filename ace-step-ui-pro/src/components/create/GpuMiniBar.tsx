@@ -35,6 +35,30 @@ export default function GpuMiniBar({ isGenerating, progress, stage }: GpuMiniBar
   const [purging, setPurging] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Smooth, "creeping" progress: eases toward the real (coarse) server progress and
+  // drifts gently between updates so the bar feels alive in real time.
+  const [displayProgress, setDisplayProgress] = useState(0);
+  const targetRef = useRef(0);
+  useEffect(() => {
+    if (typeof progress === 'number') targetRef.current = Math.max(targetRef.current, progress);
+  }, [progress]);
+  useEffect(() => {
+    if (!isGenerating) {
+      setDisplayProgress(0);
+      targetRef.current = 0;
+      return;
+    }
+    const id = setInterval(() => {
+      setDisplayProgress(prev => {
+        const target = targetRef.current;
+        if (prev < target) return Math.min(target, prev + Math.max(0.5, (target - prev) * 0.2));
+        if (target > 0 && prev < 95) return Math.min(95, prev + 0.3);
+        return prev;
+      });
+    }, 200);
+    return () => clearInterval(id);
+  }, [isGenerating]);
+
   const fetchStatus = useCallback(async () => {
     if (!token) return;
     try {
@@ -132,24 +156,27 @@ export default function GpuMiniBar({ isGenerating, progress, stage }: GpuMiniBar
       )}
 
       {/* Generation progress */}
-      {isGenerating && (
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-[10px]">
-            <span className="text-accent-400 font-medium">
-              {stage || t('create.generating')}
-            </span>
-            {progress !== undefined && (
-              <span className="text-surface-600 font-mono">{progress}%</span>
-            )}
+      {isGenerating && (() => {
+        const stageText =
+          stage === 'Generating audio…' ? t('create.stageGenerating', 'Generando audio…')
+          : (stage === 'Preparing model & LoRA...' || stage === 'Preparing model & LoRA…') ? t('create.stagePreparing', 'Preparando modelo y LoRA…')
+          : (stage || t('create.generating'));
+        const pct = Math.round(displayProgress);
+        return (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-[10px]">
+              <span className="text-accent-400 font-medium">{stageText}</span>
+              <span className="text-surface-600 font-mono">{pct}%</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-surface-200 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-300 ease-out"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
           </div>
-          <div className="h-1.5 rounded-full bg-surface-200 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-500"
-              style={{ width: `${progress ?? 0}%` }}
-            />
-          </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

@@ -14,7 +14,7 @@ import { PrepareTrainingModal } from './components/PrepareTrainingModal';
 import { EditMetadataModal } from './components/EditMetadataModal';
 import { SongProfile } from './components/SongProfile';
 import { Song, GenerationParams, View, Playlist } from './types';
-import { generateApi, songsApi, playlistsApi, getAudioUrl } from './services/api';
+import { generateApi, songsApi, playlistsApi, getAudioUrl, parseServerDate } from './services/api';
 import { useAuth } from './context/AuthContext';
 import { useResponsive } from './context/ResponsiveContext';
 import { I18nProvider, useI18n } from './context/I18nContext';
@@ -352,7 +352,7 @@ function AppContent() {
           style: s.style,
           coverUrl: `https://picsum.photos/seed/${s.id}/400/400`,
           duration: s.duration && s.duration > 0 ? `${Math.floor(s.duration / 60)}:${String(Math.floor(s.duration % 60)).padStart(2, '0')}` : '0:00',
-          createdAt: new Date(s.created_at || s.createdAt),
+          createdAt: parseServerDate(s.created_at || s.createdAt),
           tags: s.tags || [],
           audioUrl: getAudioUrl(s.audio_url, s.id),
           isPublic: s.is_public,
@@ -711,7 +711,7 @@ function AppContent() {
         style: s.style,
         coverUrl: `https://picsum.photos/seed/${s.id}/400/400`,
         duration: s.duration && s.duration > 0 ? `${Math.floor(s.duration / 60)}:${String(Math.floor(s.duration % 60)).padStart(2, '0')}` : '0:00',
-        createdAt: new Date(s.created_at),
+        createdAt: parseServerDate(s.created_at),
         tags: s.tags || [],
         audioUrl: getAudioUrl(s.audio_url, s.id),
         isPublic: s.is_public,
@@ -857,6 +857,25 @@ function AppContent() {
     isGenerating: true,
     tags: params.customMode ? ['custom'] : ['simple'],
     isPublic: true,
+    ditModel: params.ditModel,
+    generationParams: {
+      ditModel: params.ditModel,
+      inferMethod: params.inferMethod,
+      inferenceSteps: params.inferenceSteps,
+      guidanceScale: params.guidanceScale,
+      shift: params.shift,
+      seed: params.randomSeed ? -1 : params.seed,
+      randomSeed: params.randomSeed,
+      lmBackend: params.lmBackend,
+      lmModel: params.lmModel,
+      loraLoaded: params.loraLoaded,
+      loraPath: params.loraPath,
+      loraName: params.loraName,
+      loraScale: params.loraScale,
+      loraEnabled: params.loraEnabled,
+      loraTriggerTag: params.loraTriggerTag,
+      loraTagPosition: params.loraTagPosition,
+    },
   });
 
   // Handlers
@@ -887,7 +906,26 @@ function AppContent() {
       createdAt: new Date(),
       isGenerating: true,
       tags: params.customMode ? ['custom'] : ['simple'],
-      isPublic: true
+      isPublic: true,
+      ditModel: params.ditModel,
+      generationParams: {
+        ditModel: params.ditModel,
+        inferMethod: params.inferMethod,
+        inferenceSteps: params.inferenceSteps,
+        guidanceScale: params.guidanceScale,
+        shift: params.shift,
+        seed: params.randomSeed ? -1 : params.seed,
+        randomSeed: params.randomSeed,
+        lmBackend: params.lmBackend,
+        lmModel: params.lmModel,
+        loraLoaded: params.loraLoaded,
+        loraPath: params.loraPath,
+        loraName: params.loraName,
+        loraScale: params.loraScale,
+        loraEnabled: params.loraEnabled,
+        loraTriggerTag: params.loraTriggerTag,
+        loraTagPosition: params.loraTagPosition,
+      },
     };
 
     setSongs(prev => [tempSong, ...prev]);

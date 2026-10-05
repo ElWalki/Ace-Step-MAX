@@ -3,9 +3,10 @@ import { useTranslation } from 'react-i18next';
 import {
   X, Settings, Cpu, Key, Server, RefreshCw, Check, AlertCircle,
   ChevronDown, ChevronRight, Trash2, Eye, EyeOff, Plug, Unplug,
-  Github, Star, ExternalLink, Heart, FolderOpen, Download, MemoryStick,
+  Github, Star, ExternalLink, Heart, FolderOpen, Download, MemoryStick, Info,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useInfoPanel } from '../../context/InfoPanelContext';
 
 /* ── Types ── */
 export interface AiProvider {
@@ -121,6 +122,7 @@ interface Props {
 export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Props) {
   const { t } = useTranslation();
   const [tab, setTab] = useState<Tab>('providers');
+  const { enabled: infoEnabled, setEnabled: setInfoEnabled } = useInfoPanel();
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
   const [expandedProvider, setExpandedProvider] = useState<string | null>(null);
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
@@ -450,6 +452,27 @@ export default function SettingsModal({ isOpen, onClose, onSettingsChange }: Pro
           {/* ════ GENERAL TAB ════ */}
           {tab === 'general' && (
             <div className="space-y-4">
+              {/* UI Preferences */}
+              <div className="rounded-xl bg-surface-100/60 border border-surface-300/40 p-4 space-y-3">
+                <h4 className="text-xs font-semibold text-surface-700 flex items-center gap-2">
+                  <Info className="w-4 h-4 text-accent-400" />
+                  {t('settings.interface', 'Interface')}
+                </h4>
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0 pr-3">
+                    <span className="text-sm font-medium text-surface-900 block">{t('settings.infoPanel', 'Parameter info panel')}</span>
+                    <span className="text-[10px] text-surface-400">{t('settings.infoPanelDesc', 'Show a panel explaining each parameter, its value and range')}</span>
+                  </div>
+                  <button
+                    onClick={() => setInfoEnabled(!infoEnabled)}
+                    className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${infoEnabled ? 'bg-accent-500' : 'bg-surface-300'}`}
+                    aria-label={t('settings.infoPanel', 'Parameter info panel')}
+                  >
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${infoEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                  </button>
+                </div>
+              </div>
+
               {/* About */}
               <div className="rounded-xl bg-surface-100/60 border border-surface-300/40 p-5 space-y-4">
                 <div className="flex items-center gap-4">
@@ -946,6 +969,7 @@ function VramTab() {
 /* ── Model Info Sub-component ── */
 function ModelInfoTab() {
   const { t } = useTranslation();
+  const { token } = useAuth();
   const [status, setStatus] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [checkpointsPath, setCheckpointsPath] = useState<{ path: string; acestepDir: string; exists: boolean; isCustom: boolean } | null>(null);
@@ -955,6 +979,8 @@ function ModelInfoTab() {
   const [editingPath, setEditingPath] = useState(false);
   const [customPath, setCustomPath] = useState('');
   const [pathError, setPathError] = useState('');
+  const [startupModel, setStartupModel] = useState<string | null>(null);
+  const [startupSaved, setStartupSaved] = useState(false);
 
   const fetchModels = useCallback(async () => {
     setScanning(true);
@@ -971,17 +997,32 @@ function ModelInfoTab() {
   useEffect(() => {
     (async () => {
       try {
-        const [statusRes, pathRes] = await Promise.all([
+        const [statusRes, pathRes, startupRes] = await Promise.all([
           fetch('/api/generate/backend-status'),
           fetch('/api/generate/checkpoints-path'),
+          fetch('/api/generate/startup-model'),
         ]);
         if (statusRes.ok) setStatus(await statusRes.json());
         if (pathRes.ok) setCheckpointsPath(await pathRes.json());
+        if (startupRes.ok) setStartupModel(((await startupRes.json()) as { preloadModel: string | null }).preloadModel);
       } catch { /* backend offline */ }
       setLoading(false);
       fetchModels();
     })();
   }, [fetchModels]);
+
+  const saveStartupModel = useCallback(async (model: string | null) => {
+    setStartupModel(model);
+    try {
+      await fetch('/api/generate/startup-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ model }),
+      });
+      setStartupSaved(true);
+      setTimeout(() => setStartupSaved(false), 2000);
+    } catch { /* offline */ }
+  }, [token]);
 
   // Poll download progress for active downloads
   useEffect(() => {
@@ -1095,6 +1136,43 @@ function ModelInfoTab() {
             Turbo
           </span>
         )}
+      </div>
+
+      {/* ═══ Startup model ═══ */}
+      <div className="rounded-xl bg-surface-100/60 border border-surface-300/40 p-4 space-y-2">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${startupModel ? 'bg-accent-500/15' : 'bg-surface-300/30'}`}>
+            <RefreshCw className={`w-5 h-5 ${startupModel ? 'text-accent-400' : 'text-surface-400'}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-surface-900">{t('settings.startupModel', 'Modelo al iniciar')}</h3>
+            <p className="text-[11px] text-surface-500">
+              {t('settings.startupModelHint', 'Se carga automáticamente al arrancar el servidor')}
+            </p>
+          </div>
+          {startupSaved && <Check className="w-4 h-4 text-green-400 shrink-0" />}
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={startupModel || ''}
+            onChange={e => saveStartupModel(e.target.value || null)}
+            className="flex-1 bg-surface-200/60 border border-surface-300/50 rounded-lg px-3 py-2 text-xs text-surface-900 focus:outline-none focus:ring-2 focus:ring-accent-500/40"
+          >
+            <option value="">{t('settings.startupModelNone', 'No precargar (usar el del arranque de Gradio)')}</option>
+            {allModels.filter(m => m.is_preloaded).map(m => (
+              <option key={m.name} value={m.name}>{m.name}{m.is_active ? ' • activo' : ''}</option>
+            ))}
+          </select>
+          {startupModel && (
+            <button
+              onClick={() => saveStartupModel(null)}
+              className="px-2.5 py-2 rounded-lg text-xs text-surface-400 hover:text-red-400 hover:bg-red-500/10 border border-surface-300/50 transition-colors"
+              title={t('settings.startupModelClear', 'Quitar precarga')}
+            >
+              ✕
+            </button>
+          )}
+        </div>
       </div>
 
       {/* LLM */}

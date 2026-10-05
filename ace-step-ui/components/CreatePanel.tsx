@@ -10,6 +10,7 @@ import { MAIN_STYLES } from '../data/genres';
 import { EditableSlider } from './EditableSlider';
 import { SongLyricsModal } from './SongLyricsModal';
 import { LoraManager } from './LoraManager';
+import VoiceLibrary from './VoiceLibrary';
 
 interface ReferenceTrack {
   id: string;
@@ -382,6 +383,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
       return fetchedModels.map(m => ({ id: m.name, name: m.name }));
     }
     return [
+      { id: 'acestep-v15-xl-base', name: 'acestep-v15-xl-base' },
+      { id: 'acestep-v15-xl-sft', name: 'acestep-v15-xl-sft' },
+      { id: 'acestep-v15-xl-turbo', name: 'acestep-v15-xl-turbo' },
       { id: 'acestep-v15-base', name: 'acestep-v15-base' },
       { id: 'acestep-v15-sft', name: 'acestep-v15-sft' },
       { id: 'acestep-v15-turbo', name: 'acestep-v15-turbo' },
@@ -394,6 +398,9 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   // Map model ID to short display name
   const getModelDisplayName = (modelId: string): string => {
     const mapping: Record<string, string> = {
+      'acestep-v15-xl-base': '1.5XL Base',
+      'acestep-v15-xl-sft': '1.5XL SFT',
+      'acestep-v15-xl-turbo': '1.5XL Turbo',
       'acestep-v15-base': '1.5B',
       'acestep-v15-sft': '1.5S',
       'acestep-v15-turbo-shift1': '1.5TS1',
@@ -417,6 +424,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
   const [isFormattingStyle, setIsFormattingStyle] = useState(false);
   const [isFormattingLyrics, setIsFormattingLyrics] = useState(false);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
+
+  // Voice ref (Sprint 1): quick mic capture used as reference audio for timbre transfer.
+  const [voiceRecording, setVoiceRecording] = useState(false);
+  const [voiceRecordSeconds, setVoiceRecordSeconds] = useState(0);
+  const [voiceRecordError, setVoiceRecordError] = useState<string | null>(null);
+  const voiceMediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const voiceTimerRef = useRef<number | null>(null);
+  const VOICE_MAX_SECONDS = 30;
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [dragKind, setDragKind] = useState<'file' | 'audio' | null>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
@@ -889,6 +905,36 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
     previousModelRef.current = selectedModel;
   }, [selectedModel, loraLoaded]);
+
+  // Auto-adjust inference steps when switching between turbo and base/sft models.
+  // Turbo is trained for 8 steps; using more degrades quality. Base/SFT shines with 32+.
+  useEffect(() => {
+    const turbo = isTurboModel(selectedModel);
+    if (turbo) {
+      if (inferenceSteps !== 8) setInferenceSteps(8);
+    } else {
+      // If user was on turbo (8) and switched to base, push to a reasonable default.
+      if (inferenceSteps <= 12) setInferenceSteps(48);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedModel]);
+
+  // Stop any active mic recording when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (voiceTimerRef.current !== null) {
+        window.clearInterval(voiceTimerRef.current);
+        voiceTimerRef.current = null;
+      }
+      const mr = voiceMediaRecorderRef.current;
+      if (mr && mr.state !== 'inactive') {
+        try {
+          mr.stop();
+          mr.stream.getTracks().forEach(t => t.stop());
+        } catch { /* ignore */ }
+      }
+    };
+  }, []);
 
   // Auto-disable thinking and ADG when LoRA is loaded
   useEffect(() => {
@@ -2006,6 +2052,105 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
     }
   };
 
+  // --- Voice ref (Sprint 1) --------------------------------------------------
+  // Record from microphone and use it as reference_audio (timbre influence).
+  // For real voice cloning we will train a LoRA in Sprint 2/3 — this is the
+  // quick-look path that needs no training.
+  const stopVoiceRecording = (cancel = false) => {
+    if (voiceTimerRef.current !== null) {
+      window.clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    const mr = voiceMediaRecorderRef.current;
+    if (mr && mr.state !== 'inactive') {
+      try {
+        if (cancel) voiceChunksRef.current = [];
+        mr.stop();
+        mr.stream.getTracks().forEach(t => t.stop());
+      } catch { /* ignore */ }
+    }
+    voiceMediaRecorderRef.current = null;
+    setVoiceRecording(false);
+  };
+
+  const startVoiceRecording = async () => {
+    setVoiceRecordError(null);
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setVoiceRecordError('Tu navegador no soporta grabación.');
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 48000,
+        } as MediaTrackConstraints,
+      });
+      const mimeCandidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'];
+      const mimeType = mimeCandidates.find(m => MediaRecorder.isTypeSupported?.(m)) || '';
+      const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      voiceMediaRecorderRef.current = mr;
+      voiceChunksRef.current = [];
+      mr.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) voiceChunksRef.current.push(e.data);
+      };
+      mr.onstop = async () => {
+        const chunks = voiceChunksRef.current;
+        voiceChunksRef.current = [];
+        if (!chunks.length) return;
+        const blob = new Blob(chunks, { type: mimeType || 'audio/webm' });
+        const ext = (mimeType.includes('mp4') ? 'm4a' : mimeType.includes('ogg') ? 'ogg' : 'webm');
+        const file = new File([blob], `voice_ref_${Date.now()}.${ext}`, { type: blob.type });
+        // Push to existing upload path so backend stores + serves URL.
+        try {
+          await uploadReferenceTrack(file, 'reference');
+          // Pre-tune for vocal timbre transfer: not full cover, just timbre hint.
+          setAudioCoverStrength(0.4);
+          setAudioTab('reference');
+        } catch (e) {
+          setVoiceRecordError(e instanceof Error ? e.message : 'Upload failed');
+        }
+      };
+      mr.start();
+      setVoiceRecording(true);
+      setVoiceRecordSeconds(0);
+      voiceTimerRef.current = window.setInterval(() => {
+        setVoiceRecordSeconds(prev => {
+          const next = prev + 1;
+          if (next >= VOICE_MAX_SECONDS) {
+            stopVoiceRecording(false);
+          }
+          return next;
+        });
+      }, 1000);
+    } catch (err) {
+      setVoiceRecordError(err instanceof Error ? err.message : 'No se pudo acceder al micro.');
+      setVoiceRecording(false);
+    }
+  };
+
+  // Limpia todo lo que tiñe la voz: descarga voice/style LoRA, limpia reference
+  // audio, y resetea audio_cover_strength a 1.0 (default text2music).
+  const handleCleanVoice = async () => {
+    try {
+      if (loraLoaded) {
+        await handleLoraUnload();
+      }
+    } catch { /* ignore */ }
+    setReferenceAudioUrl('');
+    setReferenceAudioTitle('');
+    setReferencePlaying(false);
+    setReferenceTime(0);
+    setReferenceDuration(0);
+    setAudioCoverStrength(1.0);
+    setVoiceRecordError(null);
+  };
+  // ---------------------------------------------------------------------------
+
+
   const transcribeReferenceTrack = async (trackId: string) => {
     if (!token) return;
     setIsTranscribingReference(true);
@@ -3001,8 +3146,46 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
             >
               {/* Header with Audio label and tabs */}
               <div className="px-3 py-2.5 border-b border-zinc-100 dark:border-white/5 bg-zinc-50 dark:bg-white/[0.02]">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide">{t('audio')}</span>
+                  <div className="flex items-center gap-2">
+                    {/* Voice ref quick capture: record or clean */}
+                    <div className="flex items-center gap-1">
+                      {!voiceRecording ? (
+                        <button
+                          type="button"
+                          onClick={() => { setAudioTab('reference'); void startVoiceRecording(); }}
+                          title="🎤 Voice ref · Graba tu voz (máx 30s) y úsala como referencia de timbre. Para clonación real entrena un Voice LoRA."
+                          disabled={isUploadingReference}
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 ring-1 ring-rose-500/20 transition-colors disabled:opacity-50"
+                        >
+                          <Mic size={11} />
+                          <span>Voice</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => stopVoiceRecording(false)}
+                          title="Detener y usar grabación"
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-red-600 text-white animate-pulse"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-white" />
+                          <span className="tabular-nums">{String(Math.floor(voiceRecordSeconds / 60)).padStart(2, '0')}:{String(voiceRecordSeconds % 60).padStart(2, '0')}</span>
+                          <span>Stop</span>
+                        </button>
+                      )}
+                      {(referenceAudioUrl || loraLoaded) && !voiceRecording && (
+                        <button
+                          type="button"
+                          onClick={() => void handleCleanVoice()}
+                          title="🧼 Clean voice · Descarga LoRA, limpia referencia y resetea cover_strength. La voz vuelve a la default del modelo."
+                          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-500/20 ring-1 ring-zinc-500/20 transition-colors"
+                        >
+                          <span>🧼</span>
+                          <span>Clean</span>
+                        </button>
+                      )}
+                    </div>
                   <div className="flex items-center gap-1 bg-zinc-200/50 dark:bg-black/30 rounded-lg p-0.5">
                     <button
                       type="button"
@@ -3041,7 +3224,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                       Vocal
                     </button>
                   </div>
+                  </div>
                 </div>
+                {voiceRecordError && (
+                  <div className="mt-1 text-[10px] text-red-500">{voiceRecordError}</div>
+                )}
               </div>
 
               {/* Audio Content */}
@@ -4783,6 +4970,15 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
                     </div>
                   )}
 
+                  {/* Voice Library — voice LoRAs stored in lora_library/voice/ */}
+                  <div className="rounded-lg border border-rose-500/15 bg-rose-500/[0.03] p-2">
+                    <VoiceLibrary
+                      token={token}
+                      activeLoraPath={loraLoaded ? loraPath : undefined}
+                      onActivate={(p, name) => handleLoraLoadFromManager(p, name, 'voice')}
+                    />
+                  </div>
+
                   {/* Adapter path input */}
                   <div className="space-y-1">
                     <label className="text-[10px] font-semibold text-zinc-500 dark:text-zinc-400 uppercase tracking-wider">Adapter Path</label>
@@ -5045,16 +5241,110 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <p className="text-[10px] text-zinc-500">{t('queueMultipleJobs')}</p>
             </div>
 
+            {/* Quality Presets — applies coherent steps/guidance/CFG/APG/ADG */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-zinc-600 dark:text-zinc-400" title="Aplica un set coherente de parámetros para diferentes objetivos. Sobreescribe steps, guidance, shift, CFG interval, APG y ADG.">Quality Preset</label>
+                <span className="text-[9px] text-zinc-400 dark:text-zinc-500">{isTurboModel(selectedModel) ? 'TURBO (8 pasos fijos)' : 'BASE/SFT'}</span>
+              </div>
+              <div className="grid grid-cols-5 gap-1">
+                {([
+                  { id: 'demo', label: 'Demo', title: 'Rápido: 24 pasos, CFG 7, sin APG. ~30s.' },
+                  { id: 'high', label: 'High', title: 'Alta calidad: 48 pasos, CFG 7, ADG, APG melódico.' },
+                  { id: 'prod', label: 'Prod', title: 'Producción: 96 pasos, CFG 7, ADG, APG suave, cfg interval 0.1-0.9.' },
+                  { id: 'rich', label: 'Rich♪', title: 'Progresiones melódicas ricas: 80 pasos SDE, APG eta 0.4, momentum -0.4, ADG, CFG interval 0.05-0.95. Más variación armónica.' },
+                  { id: 'cover', label: 'Cover', title: 'Cover con música: cover_strength 0.35, CFG 6, 48 pasos, ADG. Requiere audio de referencia.' },
+                ] as const).map(p => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    title={p.title}
+                    onClick={() => {
+                      const turbo = isTurboModel(selectedModel);
+                      if (p.id === 'demo') {
+                        setInferenceSteps(turbo ? 8 : 24);
+                        setGuidanceScale(7.0);
+                        setShift(3.0);
+                        setInferMethod('ode');
+                        setUseAdg(false);
+                        setCfgIntervalStart(0.0);
+                        setCfgIntervalEnd(1.0);
+                        setApgNormThreshold(2.5);
+                        setApgMomentum(-0.75);
+                        setApgEta(0.0);
+                      } else if (p.id === 'high') {
+                        setInferenceSteps(turbo ? 8 : 48);
+                        setGuidanceScale(7.0);
+                        setShift(3.0);
+                        setInferMethod('ode');
+                        setUseAdg(!turbo);
+                        setCfgIntervalStart(0.0);
+                        setCfgIntervalEnd(1.0);
+                        setApgNormThreshold(2.5);
+                        setApgMomentum(-0.5);
+                        setApgEta(0.2);
+                      } else if (p.id === 'prod') {
+                        setInferenceSteps(turbo ? 8 : 96);
+                        setGuidanceScale(7.0);
+                        setShift(3.0);
+                        setInferMethod('ode');
+                        setUseAdg(!turbo);
+                        setCfgIntervalStart(0.1);
+                        setCfgIntervalEnd(0.9);
+                        setApgNormThreshold(2.5);
+                        setApgMomentum(-0.5);
+                        setApgEta(0.25);
+                      } else if (p.id === 'rich') {
+                        // Rich melody: maximiza variación armónica/progresión.
+                        // SDE + APG eta alto + momentum bajo + ADG + más pasos.
+                        setInferenceSteps(turbo ? 8 : 80);
+                        setGuidanceScale(6.5);
+                        setShift(3.5);
+                        setInferMethod(turbo ? 'ode' : 'sde');
+                        setUseAdg(!turbo);
+                        setCfgIntervalStart(0.05);
+                        setCfgIntervalEnd(0.95);
+                        setApgNormThreshold(3.5);
+                        setApgMomentum(-0.4);
+                        setApgEta(0.4);
+                      } else if (p.id === 'cover') {
+                        setInferenceSteps(turbo ? 8 : 48);
+                        setGuidanceScale(6.0);
+                        setShift(3.0);
+                        setInferMethod('ode');
+                        setUseAdg(!turbo);
+                        setCfgIntervalStart(0.0);
+                        setCfgIntervalEnd(1.0);
+                        setApgNormThreshold(2.5);
+                        setApgMomentum(-0.5);
+                        setApgEta(0.2);
+                        setAudioCoverStrength(0.35);
+                        setSourceStrength(0.5);
+                      }
+                    }}
+                    className="py-1.5 rounded-md text-[10px] font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-violet-100 dark:hover:bg-violet-900/30 hover:text-violet-600 dark:hover:text-violet-400 transition-colors"
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-zinc-500" title="Rich♪ usa SDE + APG alto para forzar progresiones armónicas de 2-8 tonos cada 4 compases.">
+                Demo · High · Prod · <span className="text-violet-500 font-bold">Rich♪</span> (melodías ricas) · Cover
+              </p>
+            </div>
+
             {/* Inference Steps */}
             <EditableSlider
               label={t('inferenceSteps')}
               value={inferenceSteps}
               min={1}
-              max={isTurboModel(selectedModel) ? 100 : 500}
+              max={500}
               step={1}
               onChange={setInferenceSteps}
               helpText={t('moreStepsBetterQuality')}
-              title="More steps usually improves quality but slows generation. Turbo optimized for 8, but higher values may improve quality."
+              title={isTurboModel(selectedModel)
+                ? "TURBO: usa 8 pasos. Subir más NO mejora la calidad (sale de la distribución de entrenamiento)."
+                : "BASE/SFT: 32 demo · 48–64 alta calidad · 80–150 producción · 200+ sólo experimentación. Rango total 1–500."}
             />
 
             {/* Guidance Scale */}
@@ -6369,11 +6659,11 @@ export const CreatePanel: React.FC<CreatePanelProps> = ({
               <EditableSlider
                 label="Steps"
                 value={inferenceSteps}
-                min={4}
-                max={100}
+                min={1}
+                max={500}
                 step={1}
                 onChange={setInferenceSteps}
-                title="Diffusion inference steps. 8-12 for turbo, 32-100 for base model. More = higher quality but slower."
+                title="Diffusion inference steps (1–500). Turbo: 8 (no subir). Base/SFT/XL: 32–64 calidad alta, 80–150 producción, >200 sólo investigación."
               />
               <div className="space-y-1">
                 <label className="text-[10px] font-medium text-zinc-500 dark:text-zinc-400">Sampler</label>

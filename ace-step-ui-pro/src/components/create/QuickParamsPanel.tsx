@@ -30,14 +30,15 @@ const ALL_PARAMS: ExpertParam[] = [
   { key: 'inferenceSteps', label: 'Inference Steps', description: 'More steps = higher quality but slower', min: 10, max: 200, step: 1, defaultValue: 60 },
   { key: 'shift', label: 'Shift', description: 'Noise schedule shift for DiT', min: 0, max: 10, step: 0.5, defaultValue: 3 },
   // ── APG (Adaptive Projected Guidance) ──
-  { key: 'apgNormThreshold', label: 'APG Norm Threshold', description: 'Adaptive Projected Guidance norm threshold', min: 0, max: 5, step: 0.1, defaultValue: 0 },
-  { key: 'apgMomentum', label: 'APG Momentum', description: 'Momentum for APG optimization', min: -1, max: 1, step: 0.05, defaultValue: 0 },
-  { key: 'apgEta', label: 'APG Eta', description: 'Learning rate for APG', min: 0, max: 2, step: 0.05, defaultValue: 0 },
+  // NOTE: current v1.5 checkpoints swallow these via **kwargs and call apg_forward() with hard-coded defaults — no audible effect.
+  { key: 'apgNormThreshold', label: 'APG Norm Threshold (no-op)', description: 'Ignored by current checkpoints: apg_forward() is called with its built-in default (2.5).', min: 0, max: 20, step: 0.5, defaultValue: 2.5 },
+  { key: 'apgMomentum', label: 'APG Momentum (no-op)', description: 'Ignored by current checkpoints: MomentumBuffer() always uses -0.75.', min: -1, max: 1, step: 0.05, defaultValue: -0.75 },
+  { key: 'apgEta', label: 'APG Eta (no-op)', description: 'Ignored by current checkpoints: eta stays 0 (orthogonal-only guidance).', min: 0, max: 1, step: 0.05, defaultValue: 0 },
   // ── CFG Interval ──
   { key: 'cfgIntervalStart', label: 'CFG Interval Start', description: 'Start of the CFG guidance interval (0–1 normalized)', min: 0, max: 1, step: 0.05, defaultValue: 0 },
   { key: 'cfgIntervalEnd', label: 'CFG Interval End', description: 'End of the CFG guidance interval (0–1 normalized)', min: 0, max: 1, step: 0.05, defaultValue: 1 },
   // ── Song / Global ──
-  { key: 'bpm', label: 'BPM', description: 'Beats per minute for the generated track', min: 20, max: 300, step: 1, defaultValue: 120 },
+  { key: 'bpm', label: 'BPM', description: 'Beats per minute for the generated track (0 = auto-detect from style/reference)', min: 0, max: 300, step: 1, defaultValue: 0 },
   { key: 'duration', label: 'Duration (s)', description: 'Song length in seconds (0 = auto from lyrics)', min: 0, max: 480, step: 5, defaultValue: 120 },
   { key: 'batchSize', label: 'Batch Size', description: 'Number of variations to generate at once', min: 1, max: 4, step: 1, defaultValue: 1 },
   { key: 'seed', label: 'Seed', description: 'Random seed for reproducible generation (0 = random)', min: 0, max: 999999, step: 1, defaultValue: 0 },
@@ -150,6 +151,7 @@ export default function QuickParamsPanel({ values, onChange }: QuickParamsPanelP
                     min={param.min}
                     max={param.max}
                     step={param.step}
+                    tooltip={t(`expert.${param.key}Desc`, param.description)}
                   />
                 </div>
                 <button

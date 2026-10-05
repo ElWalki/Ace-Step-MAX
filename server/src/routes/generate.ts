@@ -129,6 +129,9 @@ interface GenerateBody {
   completeTrackClasses?: string[];
   isFormatCaption?: boolean;
 
+  // DiT model to swap to before generating
+  ditModel?: string;
+
   // LoRA state at generation time
   loraLoaded?: boolean;
   loraPath?: string;
@@ -249,6 +252,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      ditModel,
       loraLoaded,
       loraPath,
       loraName,
@@ -323,6 +327,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      ditModel,
       loraLoaded,
       loraPath,
       loraName,
@@ -704,6 +709,9 @@ router.get('/models', async (_req, res: Response) => {
     // - SUBMODEL_REGISTRY includes the rest (separate HuggingFace repos, auto-downloaded on init)
     const ALL_DIT_MODELS = [
       'acestep-v15-turbo',             // default, from main model repo
+      'acestep-v15-xl-base',           // submodel
+      'acestep-v15-xl-sft',            // submodel
+      'acestep-v15-xl-turbo',          // submodel
       'acestep-v15-base',              // submodel
       'acestep-v15-sft',               // submodel
       'acestep-v15-turbo-shift1',      // submodel

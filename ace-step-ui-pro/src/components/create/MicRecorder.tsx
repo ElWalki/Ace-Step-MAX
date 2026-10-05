@@ -125,10 +125,12 @@ export default function MicRecorder({ isOpen, onClose, onAccept, targetSection =
       setIsPlayingBack(false);
       return;
     }
+    // Revoke the previous playback URL so repeated plays don't pin blobs in memory
+    if (audioRef.current?.src.startsWith('blob:')) URL.revokeObjectURL(audioRef.current.src);
     const url = URL.createObjectURL(blobRef.current);
     const audio = new Audio(url);
     audioRef.current = audio;
-    audio.onended = () => { setIsPlayingBack(false); setPlaybackTime(0); };
+    audio.onended = () => { setIsPlayingBack(false); setPlaybackTime(0); URL.revokeObjectURL(url); };
     audio.ontimeupdate = () => setPlaybackTime(audio.currentTime);
     audio.play();
     setIsPlayingBack(true);

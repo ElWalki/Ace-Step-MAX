@@ -359,6 +359,9 @@ export default memo(function PlayerBar({
                   {(gp?.ditModel || song.ditModel) && (
                     <InfoPill label="DIT" value={gp?.ditModel || song.ditModel || ''} />
                   )}
+                  {gp?.loraName && gp?.loraEnabled !== false && (
+                    <InfoPill label="LoRA" value={`${gp.loraName}${gp.loraScale != null ? ` · ${Number(gp.loraScale).toFixed(1)}x` : ''}`} />
+                  )}
                   {gp?.lmBackend && (
                     <InfoPill label="LLM" value={`${(gp.lmBackend || '').toUpperCase()}${gp.lmModel ? ` · ${gp.lmModel}` : ''}`} />
                   )}
@@ -375,7 +378,7 @@ export default memo(function PlayerBar({
                 {gp?.bpm != null && gp.bpm > 0 && <ParamItem label="BPM" value={String(gp.bpm)} />}
                 {gp?.keyScale && <ParamItem label="Key" value={gp.keyScale} />}
                 {gp?.timeSignature && <ParamItem label="Time" value={gp.timeSignature} />}
-                {gp?.seed != null && <ParamItem label="Seed" value={String(gp.seed)} />}
+                {(gp?.actualSeed ?? gp?.seed) != null && <ParamItem label="Seed" value={String(gp?.actualSeed ?? gp?.seed)} />}
                 {gp?.guidanceScale != null && <ParamItem label="CFG" value={String(gp.guidanceScale)} />}
                 {gp?.inferenceSteps != null && <ParamItem label="Steps" value={String(gp.inferenceSteps)} />}
                 {gp?.audioFormat && <ParamItem label="Format" value={gp.audioFormat.toUpperCase()} />}

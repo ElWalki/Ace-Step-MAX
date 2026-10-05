@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { Song, GenerationParams, View, GenerationJob } from './types';
+import type { Song, GenerationParams, View, GenerationJob, RegionRegenOptions, RepaintRegionSpec } from './types';
 import { songsApi, generateApi } from './services/api';
 import { useAuth } from './context/AuthContext';
 
@@ -289,13 +289,13 @@ export default function App() {
     setIsGenerating(true);
     try {
       const tempId = `temp_${Date.now()}`;
-      setJobs(prev => [...prev, { jobId: tempId, status: 'pending', progress: 0 }]);
+      setJobs(prev => [...prev, { jobId: tempId, status: 'pending', progress: 0, params }]);
 
       const res = await generateApi.startGeneration(params, token);
       const jobId = res.jobId;
 
       if (jobId) {
-        setJobs(prev => prev.map(j => j.jobId === tempId ? { ...j, jobId, status: 'running' } : j));
+        setJobs(prev => prev.map(j => j.jobId === tempId ? { ...j, jobId, status: 'running', params } : j));
         beginPollingJob(jobId, tempId);
         showToast(t('create.generating'), 'info');
       } else {
@@ -345,6 +345,65 @@ export default function App() {
   }, [token]);
 
   // ─── Context menu actions ───
+  // ─── Regenerate only a selected region of a song (in-clip repaint) ───
+  // Reuses the song's own generation params so the regenerated chunk keeps the same style,
+  // overriding only the audio source + region (+ optional prompt/lyrics) + a fresh seed.
+  // opts.startSec/endSec are ABSOLUTE SECONDS (the repaint backend expects seconds).
+  const handleRegenerateRegion = useCallback((song: Song, opts: RegionRegenOptions) => {
+    if (!song.audioUrl) return;
+    const s = Math.max(0, Math.min(opts.startSec, opts.endSec));
+    const e = Math.max(s, Math.max(opts.startSec, opts.endSec));
+    if (!isFinite(s) || !isFinite(e) || e - s < 0.15) return; // splice needs ~3×40ms of room
+    const base = { ...(song.generationParams || {}) } as GenerationParams;
+    const params: GenerationParams = {
+      ...base,
+      taskType: 'repaint',
+      ignoreAudioInput: false,
+      sourceAudioUrl: song.audioUrl,
+      sourceAudioTitle: song.title || 'Source',
+      repaintingStart: s, // absolute seconds
+      repaintingEnd: e,   // absolute seconds
+      randomSeed: false,
+      seed: Math.floor(Math.random() * 4294967295) + 1,
+      customMode: true,
+    };
+    if (opts.prompt !== undefined && opts.prompt.trim()) params.style = opts.prompt.trim();
+    if (opts.lyrics !== undefined) params.lyrics = opts.lyrics;
+    handleGenerate(params);
+    showToast(t('common.regeneratingRegion', 'Regenerating selected section…'), 'info');
+  }, [handleGenerate, showToast, t]);
+
+  // ─── Multi-region repaint: N selections, each with its own prompt/lyrics ───
+  // The server chains one repaint per region (output of one feeds the next), so
+  // untouched audio stays bit-perfect thanks to the splice.
+  const handleRegenerateRegions = useCallback((song: Song, regions: RepaintRegionSpec[]) => {
+    if (!song.audioUrl) return;
+    const valid = regions
+      .map(r => ({ ...r, start: Math.max(0, Math.min(r.start, r.end)), end: Math.max(r.start, r.end) }))
+      .filter(r => isFinite(r.start) && isFinite(r.end) && r.end - r.start >= 0.15)
+      .sort((a, b) => a.start - b.start);
+    if (valid.length === 0) return;
+    if (valid.length === 1) {
+      // Single selection → identical to the classic flow
+      const r = valid[0];
+      handleRegenerateRegion(song, { startSec: r.start, endSec: r.end, prompt: r.style, lyrics: r.lyrics });
+      return;
+    }
+    const base = { ...(song.generationParams || {}) } as GenerationParams;
+    const params: GenerationParams = {
+      ...base,
+      taskType: 'repaint',
+      ignoreAudioInput: false,
+      sourceAudioUrl: song.audioUrl,
+      sourceAudioTitle: song.title || 'Source',
+      repaintRegions: valid,
+      randomSeed: true,
+      customMode: true,
+    };
+    handleGenerate(params);
+    showToast(t('common.regeneratingRegions', `Regenerando ${valid.length} secciones…`), 'info');
+  }, [handleGenerate, handleRegenerateRegion, showToast, t]);
+
   const handleMenuAction = useCallback((action: string, song: Song) => {
     switch (action) {
       case 'play':
@@ -412,6 +471,22 @@ export default function App() {
           showToast(t('common.coverReady', 'Cover source loaded'), 'info');
         }
         break;
+      case 'repaint':
+        // Load the song into repaint mode to regenerate a selected region (keep the rest)
+        if (song.audioUrl) {
+          setReuseParams(prev => ({
+            ...(prev || {} as GenerationParams),
+            sourceAudioUrl: song.audioUrl,
+            sourceAudioTitle: song.title || 'Source',
+            taskType: 'repaint',
+            repaintingStart: 0.25,
+            repaintingEnd: 0.5,
+            customMode: true,
+          } as GenerationParams));
+          setCurrentView('create');
+          showToast(t('common.repaintReady', 'Section loaded — drag the region to regenerate'), 'info');
+        }
+        break;
       case 'extractStems':
         setStemSong(song);
         break;
@@ -436,7 +511,16 @@ export default function App() {
           const wavUrl = song.audioUrl.startsWith('http') ? song.audioUrl : `/api/songs/${song.id}/audio`;
           fetch(wavUrl)
             .then(r => r.arrayBuffer())
-            .then(buf => new AudioContext().decodeAudioData(buf))
+            .then(async buf => {
+              // Close the AudioContext after decoding — browsers cap concurrent contexts (~6),
+              // and leaking one per WAV export eventually blocks further exports.
+              const ctx = new AudioContext();
+              try {
+                return await ctx.decodeAudioData(buf);
+              } finally {
+                ctx.close().catch(() => { /* ignore */ });
+              }
+            })
             .then(decoded => {
               const numCh = decoded.numberOfChannels;
               const sampleRate = decoded.sampleRate;
@@ -505,9 +589,13 @@ export default function App() {
   const displaySongs = React.useMemo(() => {
     const generatingSongs: Song[] = jobs.map(job => ({
       id: job.jobId,
-      title: job.stage || (job.status === 'pending' ? 'Queued...' : 'Generating...'),
+      title: job.status === 'pending'
+        ? t('create.queued', 'Queued…')
+        : (job.stage && job.stage.startsWith('Preparing'))
+          ? t('create.stagePreparing', 'Preparando modelo y LoRA…')
+          : t('create.stageGenerating', 'Generando audio…'),
       lyrics: '',
-      style: '',
+      style: job.params?.style || '',
       coverUrl: '',
       duration: '',
       createdAt: new Date(),
@@ -515,9 +603,11 @@ export default function App() {
       isGenerating: true,
       progress: job.progress,
       stage: job.stage,
+      ditModel: job.params?.ditModel,
+      generationParams: job.params,
     }));
     return [...generatingSongs, ...songs];
-  }, [jobs, songs]);
+  }, [jobs, songs, t]);
 
   // ─── Render views — all kept mounted, hidden with CSS to preserve state ───
   const renderContent = () => (
@@ -573,6 +663,8 @@ export default function App() {
             onRenameSong={renameSong}
             onLikeSong={toggleLike}
             onCancelGeneration={cancelGeneration}
+            onRegenerateRegion={handleRegenerateRegion}
+            onRegenerateRegions={handleRegenerateRegions}
             audioRef={audioRef}
           />
         </div>
@@ -600,6 +692,8 @@ export default function App() {
           onRenameSong={renameSong}
           onLikeSong={toggleLike}
           onCancelGeneration={cancelGeneration}
+          onRegenerateRegion={handleRegenerateRegion}
+          onRegenerateRegions={handleRegenerateRegions}
           audioRef={audioRef}
         />
         {detailSong && (

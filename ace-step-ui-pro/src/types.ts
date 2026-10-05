@@ -23,6 +23,29 @@ export interface Song {
   prompt?: string;
 }
 
+/** Options for regenerating a selected region of a clip (in-clip repaint). */
+export interface RegionRegenOptions {
+  /** Absolute start of the region, in SECONDS. */
+  startSec: number;
+  /** Absolute end of the region, in SECONDS. */
+  endSec: number;
+  /** Optional style/prompt override for the regenerated section. */
+  prompt?: string;
+  /** Optional lyrics override for the regeneration. */
+  lyrics?: string;
+}
+
+/** One region of a multi-selection repaint (all fields per-region overrides). */
+export interface RepaintRegionSpec {
+  start: number;   // seconds
+  end: number;     // seconds
+  style?: string;
+  lyrics?: string;
+  loraPath?: string;
+  loraName?: string;
+  loraScale?: number;
+}
+
 export interface StyleDna {
   enabled: boolean;
   energy: number;         // 0-100: calm → intense
@@ -155,6 +178,132 @@ export function styleDnaToModelParams(dna: StyleDna): {
   return out;
 }
 
+// Individually toggleable caption tag packs. Each appends vocabulary the model was
+// trained on (production/era/mix descriptors), conditioning the LM caption → latent space.
+export interface CaptionBooster {
+  id: string;
+  label: string;
+  tags: string;
+}
+
+export const CAPTION_BOOSTERS: CaptionBooster[] = [
+  { id: 'studio',    label: 'Studio Quality', tags: 'studio quality, professional mix, clean master' },
+  { id: 'lofi',      label: 'Lo-Fi',          tags: 'lo-fi, tape hiss, vintage warmth' },
+  { id: 'live',      label: 'Live',           tags: 'live recording, room ambience, natural reverb' },
+  { id: 'analog80s', label: 'Analog 80s',     tags: '80s production, analog synths, gated reverb drums, tape saturation' },
+  { id: 'nineties',  label: '90s',            tags: '90s production, sampled drums, warm analog mix' },
+  { id: 'modern',    label: 'Modern',         tags: 'modern production, polished mix, contemporary sound' },
+  { id: 'wide',      label: 'Wide / Reverb',  tags: 'wide stereo image, lush reverb, spacious mix' },
+  { id: 'dry',       label: 'Dry / Intimate', tags: 'dry mix, intimate, close-mic vocals' },
+  { id: 'punchy',    label: 'Punchy Low End', tags: 'punchy drums, deep bass, tight low end' },
+  { id: 'cinematic', label: 'Cinematic',      tags: 'cinematic, epic, orchestral layers, dramatic dynamics' },
+];
+
+// Mirrors backend parse_and_validate_timesteps + the model's Euler loop:
+// values must be within [0,1] (else the whole list is silently dropped) and
+// strictly descending (else dt goes negative and corrupts that step silently).
+export interface TimestepsCheck {
+  ok: boolean;
+  steps: number;
+  values: number[];
+  error?: 'format' | 'range' | 'order';
+}
+
+export function validateTimesteps(raw: string | undefined): TimestepsCheck | null {
+  const s = (raw || '').trim();
+  if (!s) return null;
+  const parts = s.split(',').map(v => v.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const values = parts.map(Number);
+  if (values.some(v => Number.isNaN(v))) return { ok: false, steps: 0, values: [], error: 'format' };
+  if (values.some(v => v < 0 || v > 1)) return { ok: false, steps: 0, values, error: 'range' };
+  const full = values[values.length - 1] === 0 ? values : [...values, 0];
+  for (let i = 1; i < full.length; i++) {
+    if (full[i] >= full[i - 1]) return { ok: false, steps: full.length - 1, values: full, error: 'order' };
+  }
+  return { ok: true, steps: full.length - 1, values: full };
+}
+
+export type TimestepShape = 'structure' | 'linear' | 'detail';
+
+// Power-curve schedule on top of a linear 1→0 grid. Exponent <1 packs steps near t≈1
+// (global structure), >1 packs them near t≈0 (fine detail). shift=1 linear ≡ backend default.
+export const TIMESTEP_SHAPES: { id: TimestepShape; label: string; exponent: number }[] = [
+  { id: 'structure', label: 'Structure', exponent: 0.55 },
+  { id: 'linear',    label: 'Linear',    exponent: 1.0 },
+  { id: 'detail',    label: 'Detail',    exponent: 1.8 },
+];
+
+export function buildTimestepSchedule(steps: number, shape: TimestepShape): string {
+  const n = Math.max(1, Math.min(300, Math.round(steps)));
+  const exp = TIMESTEP_SHAPES.find(s => s.id === shape)?.exponent ?? 1;
+  const out: number[] = [];
+  for (let i = 0; i <= n; i++) {
+    const u = 1 - i / n;
+    out.push(+Math.pow(u, exp).toFixed(4));
+  }
+  // Guarantee strict descent after rounding (dense schedules can collapse neighbours)
+  for (let i = 1; i < out.length; i++) {
+    if (out[i] >= out[i - 1]) out[i] = +Math.max(0, out[i - 1] - 0.0001).toFixed(4);
+  }
+  out[out.length - 1] = 0;
+  return out.join(', ');
+}
+
+// Generation pipeline presets: pure diffusion vs LM-guided (autoregressive codes steer the DiT).
+export type GenerationMode = 'diffusion' | 'ar' | 'arLocked';
+
+export const GENERATION_MODES: {
+  id: GenerationMode;
+  label: string;
+  desc: string;
+  apply: Partial<GenerationParams>;
+}[] = [
+  {
+    id: 'diffusion',
+    label: 'Diffusion',
+    desc: 'Text → DiT directly. Fastest, most random. Good for quick style exploration.',
+    apply: { thinking: false },
+  },
+  {
+    id: 'ar',
+    label: 'AR-guided',
+    desc: '5Hz LM writes audio codes token-by-token, then the DiT renders them. Best structure and lyric adherence.',
+    apply: { thinking: true, useCotMetas: true, useCotCaption: true, useCotLanguage: true },
+  },
+  {
+    id: 'arLocked',
+    label: 'AR · Locked',
+    desc: 'AR-guided but the LM must respect your exact caption, BPM and key. Maximum reproducibility for iterating.',
+    apply: { thinking: true, useCotMetas: false, useCotCaption: false, useCotLanguage: false },
+  },
+];
+
+export function detectGenerationMode(p: GenerationParams): GenerationMode {
+  if (!p.thinking) return 'diffusion';
+  const locked = p.useCotMetas === false && p.useCotCaption === false;
+  return locked ? 'arLocked' : 'ar';
+}
+
+// Consistency macro (0 = wild / 100 = locked). Only touches knobs the checkpoints
+// actually read: LM sampling (temperature/top-p/rep-penalty/n-gram) + DiT guidance.
+export const CONSISTENCY_NEUTRAL = 50;
+
+export function consistencyToParams(level: number): Pick<GenerationParams,
+  'lmTemperature' | 'lmTopP' | 'lmTopK' | 'lmRepetitionPenalty' | 'noRepeatNgramSize' | 'lmCfgScale' | 'guidanceScale'> {
+  const x = Math.max(0, Math.min(100, level)) / 100;          // 0..1
+  const lerp = (a: number, b: number) => +(a + (b - a) * x).toFixed(3);
+  return {
+    lmTemperature: lerp(1.25, 0.55),        // hotter codes ↔ deterministic codes
+    lmTopP: lerp(0.98, 0.80),               // wide nucleus ↔ tight nucleus
+    lmTopK: Math.round(lerp(200, 40)),
+    lmRepetitionPenalty: lerp(1.05, 1.35),  // let motifs repeat ↔ discourage stuck loops
+    noRepeatNgramSize: x >= 0.7 ? 3 : 0,    // block 3-code (~600ms) loops only when locking
+    lmCfgScale: lerp(1.2, 2.6),             // LM follows prompt loosely ↔ tightly
+    guidanceScale: lerp(5, 10),             // DiT text adherence (kept under APG saturation zone)
+  };
+}
+
 export interface GenerationParams {
   customMode: boolean;
   songDescription?: string;
@@ -163,6 +312,7 @@ export interface GenerationParams {
   style: string;
   title: string;
   styleDna?: StyleDna;
+  captionBoosters?: string[];
   ditModel?: string;
   instrumental: boolean;
   singer: '' | 'male' | 'female';
@@ -176,9 +326,10 @@ export interface GenerationParams {
   batchSize: number;
   randomSeed: boolean;
   seed: number;
+  actualSeed?: number;
   thinking: boolean;
   enhance?: boolean;
-  audioFormat: 'mp3' | 'flac';
+  audioFormat: 'mp3' | 'flac' | 'wav';
   inferMethod: 'ode' | 'sde';
   shift: number;
   lmTemperature: number;
@@ -196,10 +347,13 @@ export interface GenerationParams {
   audioCodes?: string;
   repaintingStart?: number;
   repaintingEnd?: number;
+  repaintRegions?: RepaintRegionSpec[];
   instruction?: string;
   vocalAudioUrl?: string;
   vocalAudioTitle?: string;
   audioCoverStrength?: number;
+  referenceStrength?: number;
+  ignoreAudioInput?: boolean;
   taskType?: string;
   useAdg?: boolean;
   cfgIntervalStart?: number;
@@ -241,6 +395,7 @@ export interface GenerationJob {
   queuePosition?: number;
   progress?: number;
   stage?: string;
+  params?: GenerationParams;
   result?: {
     audioUrls: string[];
     bpm?: number;
@@ -314,7 +469,7 @@ export const DEFAULT_PARAMS: GenerationParams = {
   instrumental: false,
   singer: '',
   vocalLanguage: 'en',
-  bpm: 120,
+  bpm: 0, // 0 = Auto — the model picks the tempo from style/reference audio
   keyScale: '',
   timeSignature: '4',
   duration: 120,
@@ -333,6 +488,7 @@ export const DEFAULT_PARAMS: GenerationParams = {
   lmTopK: 100,
   lmTopP: 0.95,
   lmNegativePrompt: '',
+  referenceStrength: 1.0,
 };
 
 export const KEY_SIGNATURES = [

@@ -115,6 +115,7 @@ interface GenerateBody {
   audioCodes?: string;
   repaintingStart?: number;
   repaintingEnd?: number;
+  repaintRegions?: Array<{ start: number; end: number; style?: string; lyrics?: string; loraPath?: string; loraName?: string; loraScale?: number }>;
   instruction?: string;
   audioCoverStrength?: number;
   taskType?: string;
@@ -139,6 +140,9 @@ interface GenerateBody {
   sectionMeasures?: number;
   melodicVariation?: number;
   lmRepetitionPenalty?: number;
+
+  // DiT model to swap to before generating
+  ditModel?: string;
 
   // LoRA state at generation time
   loraLoaded?: boolean;
@@ -240,6 +244,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       audioCodes,
       repaintingStart,
       repaintingEnd,
+      repaintRegions,
       instruction,
       audioCoverStrength,
       taskType,
@@ -261,6 +266,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      ditModel,
       loraLoaded,
       loraPath,
       loraName,
@@ -315,6 +321,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       audioCodes,
       repaintingStart,
       repaintingEnd,
+      repaintRegions,
       instruction,
       audioCoverStrength,
       taskType,
@@ -336,6 +343,7 @@ router.post('/', authMiddleware, async (req: AuthenticatedRequest, res: Response
       trackName,
       completeTrackClasses,
       isFormatCaption,
+      ditModel,
       loraLoaded,
       loraPath,
       loraName,
@@ -392,6 +400,7 @@ router.post('/sections', authMiddleware, async (req: AuthenticatedRequest, res: 
       sectionMeasures, melodicVariation, lmRepetitionPenalty,
       getScores, getLrc, scoreScale, lmBatchChunkSize, trackName,
       completeTrackClasses, isFormatCaption,
+      ditModel,
       loraLoaded, loraPath, loraName, loraScale, loraEnabled,
       loraTriggerTag, loraTagPosition,
     } = req.body as GenerateBody;
@@ -416,6 +425,7 @@ router.post('/sections', authMiddleware, async (req: AuthenticatedRequest, res: 
       sectionMeasures, melodicVariation, lmRepetitionPenalty,
       getScores, getLrc, scoreScale, lmBatchChunkSize, trackName,
       completeTrackClasses, isFormatCaption,
+      ditModel,
       loraLoaded, loraPath, loraName, loraScale, loraEnabled,
       loraTriggerTag, loraTagPosition,
     };
@@ -597,8 +607,9 @@ router.get('/status/:jobId', authMiddleware, async (req: AuthenticatedRequest, r
 
               try {
                 const { buffer: rawBuffer } = await downloadAudioToBuffer(audioUrl);
-                const ext = audioUrl.includes('.flac') ? '.flac' : '.mp3';
-                const format = ext === '.flac' ? 'flac' : 'mp3';
+                const lowerUrl = audioUrl.toLowerCase();
+                const ext = lowerUrl.includes('.flac') ? '.flac' : lowerUrl.includes('.wav') ? '.wav' : '.mp3';
+                const format: 'mp3' | 'flac' | 'wav' = ext === '.flac' ? 'flac' : ext === '.wav' ? 'wav' : 'mp3';
 
                 // Tag audio with metadata
                 const finalBpm = aceStatus.result.bpm || params.bpm;
@@ -792,6 +803,9 @@ router.get('/models', async (_req, res: Response) => {
     // - SUBMODEL_REGISTRY includes the rest (separate HuggingFace repos, auto-downloaded on init)
     const ALL_DIT_MODELS = [
       'acestep-v15-turbo',             // default, from main model repo
+      'acestep-v15-xl-base',           // submodel
+      'acestep-v15-xl-sft',            // submodel
+      'acestep-v15-xl-turbo',          // submodel
       'acestep-v15-base',              // submodel
       'acestep-v15-sft',               // submodel
       'acestep-v15-turbo-shift1',      // submodel
@@ -814,14 +828,25 @@ router.get('/models', async (_req, res: Response) => {
       // Gradio API unavailable
     }
 
-    // Check which models are downloaded (exist on disk)
-    // Matches Gradio's handler.py check_model_exists() and get_available_acestep_v15_models()
-    const { existsSync, statSync } = await import('fs');
+    // Check which models are downloaded (exist on disk WITH real weight files —
+    // an interrupted download leaves configs but no .safetensors)
+    const { existsSync, statSync, readdirSync } = await import('fs');
+    const hasWeights = (dir: string): boolean => {
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const p = path.join(dir, entry.name);
+          if (entry.isDirectory()) { if (hasWeights(p)) return true; }
+          // Only transformers weight formats — silence_latent.pt etc. must not count
+          else if (/(\.safetensors|^pytorch_model.*\.bin)$/i.test(entry.name) && statSync(p).size > 1024 * 1024) return true;
+        }
+      } catch { /* unreadable */ }
+      return false;
+    };
     const downloaded = new Set<string>();
     for (const model of ALL_DIT_MODELS) {
       const modelPath = path.join(checkpointsDir, model);
       try {
-        if (existsSync(modelPath) && statSync(modelPath).isDirectory()) {
+        if (existsSync(modelPath) && statSync(modelPath).isDirectory() && hasWeights(modelPath)) {
           downloaded.add(model);
         }
       } catch { /* skip */ }
@@ -830,9 +855,9 @@ router.get('/models', async (_req, res: Response) => {
     // Also scan for any additional acestep-v15-* models on disk not in the registry
     // (e.g. user-trained or community models)
     try {
-      const { readdirSync } = await import('fs');
       for (const entry of readdirSync(checkpointsDir)) {
-        if (entry.startsWith('acestep-v15-') && statSync(path.join(checkpointsDir, entry)).isDirectory()) {
+        const p = path.join(checkpointsDir, entry);
+        if (entry.startsWith('acestep-v15-') && statSync(p).isDirectory() && hasWeights(p)) {
           downloaded.add(entry);
           if (!ALL_DIT_MODELS.includes(entry)) {
             ALL_DIT_MODELS.push(entry);
@@ -1028,6 +1053,85 @@ router.post('/models/load', async (req: AuthenticatedRequest, res: Response) => 
     res.status(500).json({ error: (error as Error).message });
   }
 });
+
+// GET /api/generate/models/load-status — Real-time model-loading progress (shard %) from Gradio
+router.get('/models/load-status', async (_req: AuthenticatedRequest, res: Response) => {
+  const fallback = { loading: false, progress: 0, phase: '' };
+  try {
+    const apiUrl = config.acestep?.apiUrl || 'http://127.0.0.1:7860';
+    const r = await fetch(`${apiUrl}/v1/models/load_status`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) { res.json(fallback); return; }
+    const data = await r.json() as { data?: unknown };
+    res.json((data && data.data) || fallback);
+  } catch {
+    res.json(fallback);
+  }
+});
+
+// ── Startup model preference ────────────────────────────────────────────────
+// Persisted server-side so the chosen DiT model is auto-loaded every time the
+// stack boots, regardless of which browser connects.
+const STARTUP_CONFIG_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../data/startup-config.json');
+
+async function readStartupConfig(): Promise<{ preloadModel: string | null }> {
+  try {
+    const raw = await fsp.readFile(STARTUP_CONFIG_PATH, 'utf-8');
+    const cfg = JSON.parse(raw);
+    return { preloadModel: typeof cfg?.preloadModel === 'string' ? cfg.preloadModel : null };
+  } catch {
+    return { preloadModel: null };
+  }
+}
+
+router.get('/startup-model', async (_req, res: Response) => {
+  res.json(await readStartupConfig());
+});
+
+router.post('/startup-model', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { model } = req.body as { model?: string | null };
+    if (model && !/^[a-zA-Z0-9_\-.]+$/.test(model)) {
+      res.status(400).json({ error: 'Invalid model name' });
+      return;
+    }
+    await fsp.mkdir(path.dirname(STARTUP_CONFIG_PATH), { recursive: true });
+    await fsp.writeFile(STARTUP_CONFIG_PATH, JSON.stringify({ preloadModel: model || null }, null, 2));
+    res.json({ success: true, preloadModel: model || null });
+  } catch (error) {
+    res.status(500).json({ error: (error as Error).message });
+  }
+});
+
+/** Wait for the Gradio API and load the configured startup model (no-op if none). */
+export async function applyStartupModel(): Promise<void> {
+  const { preloadModel } = await readStartupConfig();
+  if (!preloadModel) return;
+  const apiUrl = config.acestep?.apiUrl || 'http://127.0.0.1:7860';
+  for (let attempt = 0; attempt < 60; attempt++) {
+    try {
+      const r = await fetch(`${apiUrl}/v1/models`, { signal: AbortSignal.timeout(4000) });
+      if (r.ok) {
+        const data = await r.json() as any;
+        const active = data?.data?.models?.[0]?.name || data?.models?.[0]?.name || null;
+        if (active === preloadModel) {
+          console.log(`[startup-model] '${preloadModel}' already active`);
+          return;
+        }
+        console.log(`[startup-model] Loading '${preloadModel}'…`);
+        const load = await fetch(`${apiUrl}/v1/models/load`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: preloadModel }),
+          signal: AbortSignal.timeout(300000),
+        });
+        console.log(`[startup-model] ${load.ok ? `'${preloadModel}' loaded` : `failed: ${await load.text()}`}`);
+        return;
+      }
+    } catch { /* Gradio not up yet */ }
+    await new Promise(resolve => setTimeout(resolve, 10000));
+  }
+  console.warn('[startup-model] Gradio API never became available; skipped');
+}
 
 // POST /api/generate/models/download-main — Download the main model from HuggingFace
 router.post('/models/download-main', async (_req: AuthenticatedRequest, res: Response) => {
@@ -1371,13 +1475,13 @@ router.post('/extract-codes', authMiddleware, async (req: AuthenticatedRequest, 
     // Resolve the stored audio URL to a local file path
     const resolveAudioPath = (url: string): string => {
       if (url.startsWith('/audio/')) {
-        return path.join(config.audioDir, url.replace('/audio/', ''));
+        return path.join(config.storage.audioDir, url.replace('/audio/', ''));
       }
       if (url.startsWith('http')) {
         try {
           const parsed = new URL(url);
           if (parsed.pathname.startsWith('/audio/')) {
-            return path.join(config.audioDir, parsed.pathname.replace('/audio/', ''));
+            return path.join(config.storage.audioDir, parsed.pathname.replace('/audio/', ''));
           }
         } catch { /* fall through */ }
       }
@@ -1459,9 +1563,9 @@ const findWhisperPython = async (): Promise<string | null> => {
 
   // 2. ACE-Step venv Python (most likely location)
   const venvPythons = [
-    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/.venv/Scripts/python.exe'),
-    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/.venv/bin/python'),
-    path.resolve(config.audioDir, '../../../ACE-Step-1.5_/python_embeded/python.exe'),
+    path.resolve(config.storage.audioDir, '../../../ACE-Step-1.5_/.venv/Scripts/python.exe'),
+    path.resolve(config.storage.audioDir, '../../../ACE-Step-1.5_/.venv/bin/python'),
+    path.resolve(config.storage.audioDir, '../../../ACE-Step-1.5_/python_embeded/python.exe'),
   ];
   for (const pyPath of venvPythons) {
     try {
@@ -1506,13 +1610,13 @@ router.post('/transcribe', authMiddleware, async (req: AuthenticatedRequest, res
     // Resolve audio URL → local file path
     const resolveAudioPath = (url: string): string => {
       if (url.startsWith('/audio/')) {
-        return path.join(config.audioDir, url.replace('/audio/', ''));
+        return path.join(config.storage.audioDir, url.replace('/audio/', ''));
       }
       if (url.startsWith('http')) {
         try {
           const parsed = new URL(url);
           if (parsed.pathname.startsWith('/audio/')) {
-            return path.join(config.audioDir, parsed.pathname.replace('/audio/', ''));
+            return path.join(config.storage.audioDir, parsed.pathname.replace('/audio/', ''));
           }
         } catch { /* fall through */ }
       }

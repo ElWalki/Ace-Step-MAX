@@ -188,6 +188,10 @@ interface AudioSectionsProps {
   audioCoverStrength?: number;
   onAudioCoverStrengthChange?: (v: number) => void;
 
+  // Reference "inspiration" strength (independent slider on the Reference tab)
+  referenceStrength?: number;
+  onReferenceStrengthChange?: (v: number) => void;
+
   // Repaint region
   repaintingStart?: number;
   repaintingEnd?: number;
@@ -248,6 +252,9 @@ export default function AudioSections(props: AudioSectionsProps) {
             onUpload={props.onReferenceUpload}
             onClear={props.onReferenceClear}
             onSongDrop={props.onReferenceSongDrop}
+            strength={props.referenceAudioUrl ? (props.referenceStrength ?? 1.0) : undefined}
+            strengthLabel={t('audio.referenceStrength', 'Inspiration')}
+            onStrengthChange={props.onReferenceStrengthChange}
             audioHistory={props.audioHistory}
             onHistorySelect={item => props.onHistorySelect?.(item, 'reference')}
           />

@@ -129,6 +129,12 @@ export const TrainingPanel: React.FC = () => {
   // BPM/Key detection state
   const [detectingBpmKey, setDetectingBpmKey] = useState(false);
 
+  // Whisper transcription state
+  const [whisperBusy, setWhisperBusy] = useState(false);
+  const [whisperError, setWhisperError] = useState<string | null>(null);
+  const [whisperModel, setWhisperModel] = useState<'tiny' | 'base' | 'small' | 'medium' | 'large-v3' | 'turbo'>('base');
+  const [whisperStructure, setWhisperStructure] = useState(false);
+
   // Dataset save state
   const [savePath, setSavePath] = useState('./datasets/my_lora_dataset.json');
   const [saveStatus, setSaveStatus] = useState('');
@@ -163,6 +169,12 @@ export const TrainingPanel: React.FC = () => {
   const [trainingLog, setTrainingLog] = useState('');
   const [trainingMetrics, setTrainingMetrics] = useState<unknown>(null);
   const [trainingDatasetInfo, setTrainingDatasetInfo] = useState('');
+
+  // Voice LoRA preset state
+  const [voicePresetEnabled, setVoicePresetEnabled] = useState(false);
+  const [voiceName, setVoiceName] = useState('');
+  const [voiceDatasetMinutes, setVoiceDatasetMinutes] = useState<number | ''>('');
+  const [voiceBaseModel, setVoiceBaseModel] = useState('acestep-v15-base');
 
   // Export state
   const [exportPath, setExportPath] = useState('./lora_output/final_lora');
@@ -473,6 +485,57 @@ export const TrainingPanel: React.FC = () => {
     }
   }, [token, currentSample, detectingBpmKey]);
 
+  // === Whisper transcribe current sample ===
+  const handleWhisperTranscribe = useCallback(async () => {
+    if (!token || !currentSample) return;
+    const audioPath = typeof currentSample.audio === 'string'
+      ? currentSample.audio
+      : (currentSample.audio as Record<string, unknown>)?.path as string | undefined;
+    if (!audioPath) return;
+    setWhisperBusy(true);
+    setWhisperError(null);
+    try {
+      const res = await fetch('/api/training/transcribe-enhanced', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          audioPath,
+          model: whisperModel,
+          structure: whisperStructure,
+          backend: 'auto',
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      // Common shapes: { text }, { lyrics }, { transcript }, { segments: [...] }
+      let text: string = '';
+      if (typeof data?.text === 'string') text = data.text;
+      else if (typeof data?.lyrics === 'string') text = data.lyrics;
+      else if (typeof data?.transcript === 'string') text = data.transcript;
+      else if (Array.isArray(data?.segments)) {
+        text = data.segments
+          .map((s: { text?: string }) => (s?.text ?? '').trim())
+          .filter(Boolean)
+          .join('\n');
+      }
+      if (text) {
+        setEditLyrics(text.trim());
+      } else {
+        setWhisperError('Whisper devolvió respuesta vacía');
+      }
+    } catch (err) {
+      setWhisperError(err instanceof Error ? err.message : 'Whisper failed');
+    } finally {
+      setWhisperBusy(false);
+    }
+  }, [token, currentSample, whisperModel, whisperStructure]);
+
   // === Update settings ===
   const handleUpdateSettings = useCallback(async () => {
     if (!token) return;
@@ -572,12 +635,82 @@ export const TrainingPanel: React.FC = () => {
       setTrainingLog(result.log as string);
       setTrainingMetrics(result.metrics);
       markStep('train');
+
+      // If voice preset is enabled and a name was set, persist metadata into
+      // lora_library/voice/<name>/voice_metadata.json so it appears in the
+      // Voice Library list of CreatePanel.
+      if (voicePresetEnabled && voiceName.trim()) {
+        const safe = voiceName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+        try {
+          await fetch(`/api/training/voice-loras/${encodeURIComponent(safe)}/metadata`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              dataset_minutes: typeof voiceDatasetMinutes === 'number' ? voiceDatasetMinutes : null,
+              base_model: voiceBaseModel || null,
+              training_params: {
+                rank: trainingParams.rank,
+                alpha: trainingParams.alpha,
+                dropout: trainingParams.dropout,
+                learningRate: trainingParams.learningRate,
+                epochs: trainingParams.epochs,
+              },
+            }),
+          });
+        } catch (e) {
+          console.warn('Failed to write voice_metadata.json:', e);
+        }
+        // Notify any mounted VoiceLibrary instance to reload
+        try { window.dispatchEvent(new CustomEvent('voice-library:refresh')); } catch { /* noop */ }
+      }
     } catch (error) {
       setTrainingProgress(`${t('error')}: ${error instanceof Error ? error.message : 'Failed'}`);
     } finally {
       setIsTraining(false);
     }
-  }, [token, trainingParams, t, markStep]);
+  }, [token, trainingParams, t, markStep, voicePresetEnabled, voiceName, voiceDatasetMinutes, voiceBaseModel]);
+
+  // Apply voice LoRA preset — fetches recommended defaults and routes output
+  // to lora_library/voice/<name>/. Subsequent training writes metadata.
+  const applyVoicePreset = useCallback(async () => {
+    if (!token) return;
+    const rawName = voiceName.trim() || `voice_${Date.now()}`;
+    try {
+      const res = await fetch('/api/training/voice-loras/preset', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: rawName }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const p = await res.json();
+      setTrainingParams(prev => ({
+        ...prev,
+        rank: p.rank ?? prev.rank,
+        alpha: p.alpha ?? prev.alpha,
+        dropout: p.dropout ?? prev.dropout,
+        learningRate: p.learningRate ?? prev.learningRate,
+        epochs: p.epochs ?? prev.epochs,
+        batchSize: p.batchSize ?? prev.batchSize,
+        gradientAccumulation: p.gradientAccumulation ?? prev.gradientAccumulation,
+        saveEvery: p.saveEvery ?? prev.saveEvery,
+        shift: p.shift ?? prev.shift,
+        seed: p.seed ?? prev.seed,
+        outputDir: p.outputDir ?? prev.outputDir,
+      }));
+      setVoicePresetEnabled(true);
+      // Reflect the sanitized name back to the user
+      const safe = rawName.replace(/[^a-zA-Z0-9_-]/g, '_');
+      setVoiceName(safe);
+    } catch (e) {
+      console.error('Failed to apply voice preset:', e);
+    }
+  }, [token, voiceName]);
 
   const handleStopTraining = useCallback(async () => {
     if (!token) return;
@@ -964,6 +1097,47 @@ export const TrainingPanel: React.FC = () => {
                       <label className="text-[11px] text-zinc-500 mb-0.5 block">Lyrics ({t('editableUsedForTraining')})</label>
                       <textarea value={editLyrics} onChange={e => setEditLyrics(e.target.value)} rows={3} className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-violet-500/50 resize-none" />
                     </div>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={handleWhisperTranscribe}
+                        disabled={whisperBusy || !currentSample}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        title="Auto-transcribe lyrics from audio using Whisper"
+                      >
+                        {whisperBusy ? (
+                          <><Loader2 className="w-3 h-3 animate-spin" /> Transcribing...</>
+                        ) : (
+                          <>🎙️ Whisper transcribe</>
+                        )}
+                      </button>
+                      <select
+                        value={whisperModel}
+                        onChange={e => setWhisperModel(e.target.value as typeof whisperModel)}
+                        className="bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-emerald-500/50"
+                        title="Whisper model"
+                      >
+                        <option value="tiny">tiny</option>
+                        <option value="base">base</option>
+                        <option value="small">small</option>
+                        <option value="medium">medium</option>
+                        <option value="large-v3">large-v3</option>
+                        <option value="turbo">turbo</option>
+                      </select>
+                      <label className="flex items-center gap-1 text-[10px] text-zinc-400 cursor-pointer" title="Add [verse]/[chorus] structure tags">
+                        <input
+                          type="checkbox"
+                          checked={whisperStructure}
+                          onChange={e => setWhisperStructure(e.target.checked)}
+                          className="accent-emerald-500"
+                        />
+                        struct
+                      </label>
+                    </div>
+                    {whisperError && (
+                      <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
+                        {whisperError}
+                      </div>
+                    )}
                     {editRawLyrics && (
                       <div>
                         <label className="text-[11px] text-zinc-500 mb-0.5 block">Raw Lyrics (read-only)</label>
@@ -1075,6 +1249,70 @@ export const TrainingPanel: React.FC = () => {
                 </button>
               </div>
               {trainingDatasetInfo && <p className="text-xs text-zinc-400 mt-1.5 break-words whitespace-pre-wrap">{trainingDatasetInfo}</p>}
+            </Section>
+
+            {/* Voice LoRA Preset */}
+            <Section title="🎤 Voice LoRA (opcional)">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-xs text-zinc-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={voicePresetEnabled}
+                      onChange={e => setVoicePresetEnabled(e.target.checked)}
+                      className="accent-rose-500"
+                    />
+                    Entrenar como Voice LoRA
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void applyVoicePreset()}
+                    className="ml-auto px-2 py-1 rounded-md text-[10px] font-bold bg-rose-500/15 text-rose-300 hover:bg-rose-500/25 ring-1 ring-rose-500/30"
+                    title="Aplicar preset: rank 16, lr 1e-4, ~80 epochs, output a lora_library/voice/<name>"
+                  >
+                    Apply Voice Preset
+                  </button>
+                </div>
+                {voicePresetEnabled && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <FieldRow label="Voice name">
+                      <input
+                        type="text"
+                        value={voiceName}
+                        onChange={e => setVoiceName(e.target.value)}
+                        placeholder="mi_voz"
+                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-rose-500/50"
+                      />
+                    </FieldRow>
+                    <FieldRow label="Dataset min.">
+                      <input
+                        type="number"
+                        value={voiceDatasetMinutes}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setVoiceDatasetMinutes(v === '' ? '' : Number(v));
+                        }}
+                        step={0.5}
+                        placeholder="5"
+                        className="w-24 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-rose-500/50"
+                      />
+                    </FieldRow>
+                    <FieldRow label="Base model">
+                      <input
+                        type="text"
+                        value={voiceBaseModel}
+                        onChange={e => setVoiceBaseModel(e.target.value)}
+                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:border-rose-500/50"
+                      />
+                    </FieldRow>
+                  </div>
+                )}
+                <p className="text-[10px] text-zinc-500 leading-snug">
+                  Activa esta opción y pulsa "Apply Voice Preset" para configurar parámetros recomendados (rank 16, lr 1e-4, ~80 epochs)
+                  y enrutar la salida a <code className="text-rose-300">lora_library/voice/&lt;name&gt;</code>.
+                  Al iniciar el entrenamiento se guardará <code className="text-rose-300">voice_metadata.json</code>.
+                </p>
+              </div>
             </Section>
 
             {/* LoRA Settings */}

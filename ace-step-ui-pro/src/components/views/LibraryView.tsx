@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Grid3X3, List, Heart, Clock, Music, ArrowUpDown, SortAsc, SortDesc, ThumbsDown } from 'lucide-react';
-import type { Song } from '../../types';
+import type { Song, RegionRegenOptions, RepaintRegionSpec } from '../../types';
 import SongCard from '../create/SongCard';
 import PaginationBar from '../ui/PaginationBar';
 import { getCoverStyle } from '../../utils/coverArt';
@@ -23,10 +23,12 @@ interface LibraryViewProps {
   onRenameSong?: (id: string, newTitle: string) => void;
   onLikeSong?: (id: string) => void;
   onCancelGeneration?: (jobId: string) => void;
+  onRegenerateRegion?: (song: Song, opts: RegionRegenOptions) => void;
+  onRegenerateRegions?: (song: Song, regions: RepaintRegionSpec[]) => void;
   audioRef?: React.RefObject<HTMLAudioElement>;
 }
 
-export default function LibraryView({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, onCancelGeneration, audioRef }: LibraryViewProps) {
+export default function LibraryView({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, onCancelGeneration, onRegenerateRegion, onRegenerateRegions, audioRef }: LibraryViewProps) {
   const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const [filterKey, setFilterKey] = useState<FilterKey>('all');
@@ -197,7 +199,7 @@ export default function LibraryView({ songs, currentSong, isPlaying, onPlaySong,
               onRename={onRenameSong ? (newTitle: string) => onRenameSong(song.id, newTitle) : undefined}
               onLike={onLikeSong ? () => onLikeSong(song.id) : undefined}
               onCancelGeneration={onCancelGeneration && song.isGenerating ? () => onCancelGeneration(song.id) : undefined}
-              audioRef={audioRef}
+              onRegenerateRegion={onRegenerateRegion ? (opts) => onRegenerateRegion(song, opts) : undefined}                onRegenerateRegions={onRegenerateRegions ? (regions) => onRegenerateRegions(song, regions) : undefined}              audioRef={audioRef}
             />
           ))}
         </div>

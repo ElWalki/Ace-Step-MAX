@@ -83,12 +83,12 @@ function buildComment(meta: AudioMetadataOptions): string {
  */
 export function tagAudioBuffer(
   buffer: Buffer,
-  format: 'mp3' | 'flac',
+  format: 'mp3' | 'flac' | 'wav',
   meta: AudioMetadataOptions
 ): Buffer {
   if (format === 'mp3') {
     return tagMp3Buffer(buffer, meta);
   }
-  // FLAC: pass through for now (could add vorbis comments later)
+  // FLAC / WAV: pass through unchanged (lossless container, no tagging yet)
   return buffer;
 }

@@ -6,7 +6,7 @@ import { resolvePythonPath } from '../services/acestep.js';
 import multer from 'multer';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { existsSync, readdirSync, statSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, statSync, readFileSync, unlinkSync } from 'fs';
 import { mkdir, writeFile, readFile } from 'fs/promises';
 import { execSync, spawnSync, spawn } from 'child_process';
 import { randomUUID } from 'crypto';
@@ -599,6 +599,172 @@ router.get('/lora-checkpoints', authMiddleware, async (req: AuthenticatedRequest
   } catch (error) {
     console.error('[Training] List LoRA checkpoints error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list checkpoints' });
+  }
+});
+
+// GET /api/training/voice-loras — List voice LoRAs (lora_library/voice/<name>/)
+// Each voice LoRA is a folder under lora_library/voice/. Optional metadata.json
+// gives extra info: dataset_minutes, base_model, train_date, sample_clips.
+router.get('/voice-loras', authMiddleware, async (_req: AuthenticatedRequest, res: Response) => {
+  try {
+    const aceStepDir = getAceStepDir();
+    const voiceDir = path.join(aceStepDir, 'lora_library', 'voice');
+
+    if (!existsSync(voiceDir)) {
+      res.json({ voices: [], voiceDir });
+      return;
+    }
+
+    type VoiceEntry = {
+      name: string;
+      path: string;
+      finalLoraPath: string | null;
+      checkpoints: string[];
+      metadata: Record<string, unknown> | null;
+      createdAt: string;
+    };
+
+    const voices: VoiceEntry[] = [];
+    for (const entry of readdirSync(voiceDir)) {
+      const folder = path.join(voiceDir, entry);
+      let st: ReturnType<typeof statSync>;
+      try { st = statSync(folder); } catch { continue; }
+      if (!st.isDirectory()) continue;
+
+      // Locate final_lora (preferred) or fallback to last checkpoint
+      const finalLora = path.join(folder, 'final_lora');
+      const finalLoraPath = existsSync(finalLora) ? finalLora : null;
+
+      const cpDir = path.join(folder, 'checkpoints');
+      const checkpoints: string[] = [];
+      if (existsSync(cpDir)) {
+        for (const cp of readdirSync(cpDir)) {
+          const cpPath = path.join(cpDir, cp);
+          try {
+            if (statSync(cpPath).isDirectory()) checkpoints.push(cpPath);
+          } catch { /* ignore */ }
+        }
+      }
+
+      // Optional metadata
+      let metadata: Record<string, unknown> | null = null;
+      const metaCandidates = [
+        path.join(folder, 'voice_metadata.json'),
+        finalLoraPath ? path.join(finalLoraPath, 'voice_metadata.json') : null,
+      ].filter(Boolean) as string[];
+      for (const m of metaCandidates) {
+        if (existsSync(m)) {
+          try { metadata = JSON.parse(readFileSync(m, 'utf-8')); break; } catch { /* ignore */ }
+        }
+      }
+
+      voices.push({
+        name: entry,
+        path: folder,
+        finalLoraPath,
+        checkpoints,
+        metadata,
+        createdAt: st.birthtime.toISOString(),
+      });
+    }
+
+    voices.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    res.json({ voices, voiceDir });
+  } catch (error) {
+    console.error('[Training] List voice LoRAs error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to list voice LoRAs' });
+  }
+});
+
+// DELETE /api/training/voice-loras/:name — Remove a voice LoRA folder
+router.delete('/voice-loras/:name', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const raw = req.params.name || '';
+    // Hard restrict to safe characters to prevent traversal
+    if (!/^[a-zA-Z0-9_\-]+$/.test(raw)) {
+      res.status(400).json({ error: 'Invalid voice name' });
+      return;
+    }
+    const aceStepDir = getAceStepDir();
+    const voiceDir = path.join(aceStepDir, 'lora_library', 'voice');
+    const target = path.join(voiceDir, raw);
+    // Re-resolve and ensure it stays inside voiceDir
+    const resolved = path.resolve(target);
+    if (!resolved.startsWith(path.resolve(voiceDir) + path.sep)) {
+      res.status(400).json({ error: 'Path escapes voice library' });
+      return;
+    }
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: 'Voice not found' });
+      return;
+    }
+    const { rm } = await import('fs/promises');
+    await rm(resolved, { recursive: true, force: true });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[Training] Delete voice LoRA error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to delete voice LoRA' });
+  }
+});
+
+// POST /api/training/voice-loras/preset — Suggested defaults for voice LoRA training.
+// Returned values can be applied to the standard /api/training/start payload.
+router.post('/voice-loras/preset', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  const { name } = req.body || {};
+  const safeName = String(name || `voice_${Date.now()}`).replace(/[^a-zA-Z0-9_-]/g, '_');
+  res.json({
+    rank: 16,
+    alpha: 32,
+    dropout: 0.05,
+    learningRate: 1e-4,
+    epochs: 80,
+    batchSize: 1,
+    gradientAccumulation: 4,
+    saveEvery: 20,
+    shift: 3.0,
+    seed: 42,
+    outputDir: `./lora_library/voice/${safeName}`,
+    triggerTag: safeName,
+    tagPosition: 'prepend',
+    note: 'Preset: rank 16 (attention-focused timbre), lr 1e-4, ~80 epochs. Necesita 5–30 min de audio limpio.',
+  });
+});
+
+// POST /api/training/voice-loras/:name/metadata — Write voice_metadata.json
+router.post('/voice-loras/:name/metadata', authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const raw = req.params.name || '';
+    if (!/^[a-zA-Z0-9_\-]+$/.test(raw)) {
+      res.status(400).json({ error: 'Invalid voice name' });
+      return;
+    }
+    const aceStepDir = getAceStepDir();
+    const voiceDir = path.join(aceStepDir, 'lora_library', 'voice');
+    const folder = path.join(voiceDir, raw);
+    const resolved = path.resolve(folder);
+    if (!resolved.startsWith(path.resolve(voiceDir) + path.sep)) {
+      res.status(400).json({ error: 'Path escapes voice library' });
+      return;
+    }
+    await mkdir(resolved, { recursive: true });
+
+    const payload = {
+      voice: true,
+      name: raw,
+      dataset_minutes: typeof req.body?.dataset_minutes === 'number' ? req.body.dataset_minutes : null,
+      base_model: typeof req.body?.base_model === 'string' ? req.body.base_model : null,
+      train_date: new Date().toISOString(),
+      sample_clips: Array.isArray(req.body?.sample_clips) ? req.body.sample_clips : [],
+      training_params: req.body?.training_params || null,
+      notes: typeof req.body?.notes === 'string' ? req.body.notes : null,
+    };
+
+    const metaPath = path.join(resolved, 'voice_metadata.json');
+    await writeFile(metaPath, JSON.stringify(payload, null, 2), 'utf-8');
+    res.json({ ok: true, path: metaPath, metadata: payload });
+  } catch (error) {
+    console.error('[Training] Save voice metadata error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to save metadata' });
   }
 });
 

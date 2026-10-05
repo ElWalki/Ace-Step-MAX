@@ -248,17 +248,36 @@ export default function LoraManager({
     }
   }, [handleFolderLoad, toggleFav, token, onUnloadLora]);
 
+  // Draggable floating panel position (null = default docked position on the right)
+  const [panelPos, setPanelPos] = useState<{ x: number; y: number } | null>(null);
+  const onPanelDragStart = useCallback((e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest('button')) return; // don't drag when clicking header buttons
+    const panel = (e.currentTarget as HTMLElement).closest('[data-lora-panel]') as HTMLElement | null;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const dx = e.clientX - rect.left, dy = e.clientY - rect.top;
+    const move = (ev: MouseEvent) => setPanelPos({ x: Math.max(0, ev.clientX - dx), y: Math.max(0, ev.clientY - dy) });
+    const up = () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  }, []);
+
   if (!isOpen) return null;
 
   const isLoraActive = (lora: LoraEntry) => loraLoaded && selectedLoraName === lora.name;
   const hasActiveLora = loraLoaded;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-surface-50 border border-surface-300 rounded-2xl w-[480px] max-h-[80vh] flex flex-col
-        animate-scale-in shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200">
+    // Non-blocking overlay: no dark/blur backdrop and clicks pass through, so the model-load
+    // state stays visible behind it and the base model can be changed while this panel is open.
+    <div className="fixed inset-0 z-50 flex items-center justify-end pr-4 pointer-events-none">
+      <div
+        data-lora-panel
+        style={panelPos ? { position: 'fixed', left: panelPos.x, top: panelPos.y, right: 'auto' } : undefined}
+        className="bg-surface-50 border border-surface-300 rounded-2xl w-[480px] max-h-[85vh] flex flex-col
+        animate-scale-in shadow-2xl pointer-events-auto ring-1 ring-black/10">
+        {/* Header — drag handle to move the floating panel */}
+        <div onMouseDown={onPanelDragStart} className="flex items-center justify-between px-4 py-3 border-b border-surface-200 cursor-move select-none">
           <h3 className="text-sm font-semibold text-surface-900 flex items-center gap-2">
             <Sliders className="w-4 h-4 text-brand-400" />
             {t('lora.manager', 'LoRA Manager')}
@@ -650,9 +669,15 @@ export default function LoraManager({
 
       {/* Confirmation dialog */}
       {confirmLoad && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50">
-          <div className="bg-surface-50 border border-surface-300 rounded-xl w-[320px] p-4 space-y-3
-            animate-scale-in shadow-2xl">
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 pointer-events-auto"
+          onClick={() => setConfirmLoad(null)}
+        >
+          <div
+            className="bg-surface-50 border border-surface-300 rounded-xl w-[320px] p-4 space-y-3
+            animate-scale-in shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
             <h4 className="text-sm font-semibold text-surface-900">
               {t('lora.confirmLoad', 'Load LoRA?')}
             </h4>
@@ -706,7 +731,7 @@ export default function LoraManager({
       {/* Context menu */}
       {contextMenu && (
         <div
-          className="fixed inset-0 z-[60]"
+          className="fixed inset-0 z-[60] pointer-events-auto"
           onClick={() => setContextMenu(null)}
           onContextMenu={e => { e.preventDefault(); setContextMenu(null); }}
         >

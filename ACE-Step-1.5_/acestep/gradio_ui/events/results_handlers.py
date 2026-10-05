@@ -25,6 +25,91 @@ from acestep.gpu_config import (
 )
 
 
+def _pretty_model_label(folder_name: str) -> str:
+    """Map an ACE-Step checkpoint folder name to a human-friendly variant label.
+
+    Examples:
+        acestep-v15-base                 -> v1.5 Base
+        acestep-v15-sft                  -> v1.5 SFT (Fine-tuned)
+        acestep-v15-turbo                -> v1.5 Turbo
+        acestep-v15-turbo-continuous     -> v1.5 Turbo (Continuous)
+        acestep-v15-turbo-shift1         -> v1.5 Turbo (Shift 1)
+        acestep-v15-turbo-shift3         -> v1.5 Turbo (Shift 3)
+        acestep-v15-xl-base              -> v1.5 XL Base
+        acestep-v15-xl-turbo             -> v1.5 XL Turbo
+    """
+    if not folder_name:
+        return "unknown-model"
+    name = folder_name.strip().lower()
+    # Version
+    if "v15" in name or "v1.5" in name:
+        version = "v1.5"
+    elif "v2" in name:
+        version = "v2"
+    else:
+        version = ""
+    # Size
+    size = "XL " if "xl" in name.split("-") or "-xl-" in f"-{name}-" else ""
+    # Variant
+    if "turbo" in name:
+        variant = "Turbo"
+    elif "sft" in name:
+        variant = "SFT (Fine-tuned)"
+    elif "base" in name:
+        variant = "Base"
+    else:
+        variant = folder_name
+    # Suffix
+    suffix = ""
+    if "continuous" in name:
+        suffix = " (Continuous)"
+    elif "shift1" in name:
+        suffix = " (Shift 1)"
+    elif "shift3" in name:
+        suffix = " (Shift 3)"
+    elif "shift2" in name:
+        suffix = " (Shift 2)"
+    parts = [p for p in [version, f"{size}{variant}".strip()] if p]
+    pretty = " ".join(parts) + suffix
+    return pretty or folder_name
+
+
+def _build_audio_source_badge(dit_handler) -> str:
+    """Build a compact source badge describing the active model/LoRA for generated tracks."""
+    model_path = getattr(dit_handler, "_acestep_checkpoint_path", "") if dit_handler is not None else ""
+    model_name = os.path.basename(os.path.normpath(model_path)) if model_path else "unknown-model"
+    pretty = _pretty_model_label(model_name)
+
+    lora_status = {}
+    if dit_handler is not None and hasattr(dit_handler, "get_lora_status"):
+        try:
+            lora_status = dit_handler.get_lora_status() or {}
+        except Exception:
+            lora_status = {}
+
+    loaded = bool(lora_status.get("loaded", False))
+    active = bool(lora_status.get("active", False))
+
+    if loaded:
+        lora_name = lora_status.get("source") or lora_status.get("name") or os.path.basename(
+            os.path.normpath(lora_status.get("path", ""))
+        )
+        lora_scale = float(lora_status.get("scale", 1.0))
+        if active:
+            return f"Model: {pretty} [{model_name}] | LoRA: {lora_name} (x{lora_scale:.2f})"
+        return f"Model: {pretty} [{model_name}] | LoRA: {lora_name} (loaded, disabled)"
+
+    return f"Model: {pretty} [{model_name}] | LoRA: none"
+
+
+def _build_audio_label(sample_index: int, source_badge: str) -> str:
+    """Build audio component label for a given sample index."""
+    base = t("results.generated_music", n=sample_index)
+    if source_badge:
+        return f"{base} | {source_badge}"
+    return base
+
+
 def parse_lrc_to_subtitles(lrc_text: str, total_duration: Optional[float] = None) -> List[Dict[str, Any]]:
     """
     Parse LRC lyrics text to Gradio subtitles format with SMART POST-PROCESSING.
@@ -588,6 +673,10 @@ def generate_with_progress(
         constrained_decoding_debug=constrained_decoding_debug,
         audio_format=audio_format,
     )
+
+    source_badge = _build_audio_source_badge(dit_handler)
+    current_audio_labels = [_build_audio_label(i + 1, source_badge) for i in range(8)]
+
     result = generate_music(
         dit_handler,
         llm_handler,
@@ -657,7 +746,10 @@ def generate_with_progress(
     # Clear lrc_display with empty string - this triggers .change() to clear subtitles
     clear_lrcs = [gr.update(value="", visible=True) for _ in range(8)]
     clear_accordions = [gr.skip() for _ in range(8)]  # Don't change accordion visibility
-    dump_audio = [gr.update(value=None, subtitles=None) for _ in range(8)]
+    dump_audio = [
+        gr.update(value=None, subtitles=None, label=current_audio_labels[i])
+        for i in range(8)
+    ]
     yield (
         # Audio outputs - just skip, value will be updated in loop
         # Subtitles will be cleared via lrc_display.change()
@@ -809,7 +901,7 @@ def generate_with_progress(
             # First, update audio and clear LRC to avoid race condition
             # (audio needs to load before subtitles are set via .change() event)
             current_audio_updates = [gr.skip() for _ in range(8)]
-            current_audio_updates[i] = audio_path
+            current_audio_updates[i] = gr.update(value=audio_path, label=current_audio_labels[i])
             
             codes_display_updates = [gr.skip() for _ in range(8)]
             codes_display_updates[i] = gr.update(value=code_str, visible=True)  # Keep visible=True
@@ -918,7 +1010,10 @@ def generate_with_progress(
     # The lrc_display was already updated in the loop yields above.
     # lrc_display.change() event will automatically update the audio subtitles.
     # This decouples audio value updates from subtitle updates, avoiding flickering.
-    audio_playback_updates = [gr.update(playback_position=0) for _ in range(8)]
+    audio_playback_updates = [
+        gr.update(playback_position=0, label=current_audio_labels[i])
+        for i in range(8)
+    ]
     yield (
         # Audio - just skip, subtitles are updated via lrc_display.change()
         # gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(),

@@ -105,7 +105,7 @@ if %ATTEMPTS% gtr %MAX_ATTEMPTS% (
 )
 netstat -aon | findstr ":8001 " | findstr "LISTENING" >nul 2>&1
 if %errorlevel% equ 0 (
-    powershell -Command "try { $r = Invoke-WebRequest -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
+    powershell -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8001/gradio_api/info' -TimeoutSec 3 -ErrorAction Stop; exit 0 } catch { exit 1 }" >nul 2>&1
     if %errorlevel% equ 0 (
         set READY=1
         goto GRADIO_READY

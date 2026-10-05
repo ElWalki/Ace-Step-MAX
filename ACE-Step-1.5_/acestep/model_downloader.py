@@ -31,6 +31,10 @@ SUBMODEL_REGISTRY: Dict[str, str] = {
     "acestep-v15-base": "ACE-Step/acestep-v15-base",
     "acestep-v15-turbo-shift1": "ACE-Step/acestep-v15-turbo-shift1",
     "acestep-v15-turbo-continuous": "ACE-Step/acestep-v15-turbo-continuous",
+    # DiT XL models (5B)
+    "acestep-v15-xl-base": "ACE-Step/acestep-v15-xl-base",
+    "acestep-v15-xl-sft": "ACE-Step/acestep-v15-xl-sft",
+    "acestep-v15-xl-turbo": "ACE-Step/acestep-v15-xl-turbo",
 }
 
 # Components that come from the main model repo (ACE-Step/Ace-Step1.5)
@@ -58,21 +62,38 @@ def get_checkpoints_dir(custom_dir: Optional[str] = None) -> Path:
     return get_project_root() / "checkpoints"
 
 
+def _has_model_weights(model_path: Path) -> bool:
+    """True if the folder contains actual weight files (guards against interrupted downloads).
+
+    Only counts transformers-loadable weight formats; auxiliary tensors like
+    silence_latent.pt must NOT qualify a folder as a downloaded model.
+    """
+    if not model_path.is_dir():
+        return False
+    for pattern in ("*.safetensors", "pytorch_model*.bin"):
+        for f in model_path.rglob(pattern):
+            try:
+                if f.stat().st_size > 1024 * 1024:  # >1MB: ignore placeholder/partial stubs
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def check_main_model_exists(checkpoints_dir: Optional[Path] = None) -> bool:
     """
-    Check if the main model components exist in the checkpoints directory.
-    
-    Returns:
-        True if all main model components exist, False otherwise.
+    Check if the SHARED main model components exist (vae + text encoder).
+
+    The DiT is validated separately per config_path and the LM has its own init
+    path, so a broken/missing default-DiT folder must not block booting with a
+    different, valid DiT (e.g. xl-sft).
     """
     if checkpoints_dir is None:
         checkpoints_dir = get_checkpoints_dir()
-    
-    for component in MAIN_MODEL_COMPONENTS:
-        component_path = checkpoints_dir / component
-        if not component_path.exists():
-            return False
-    return True
+
+    vae_path = checkpoints_dir / "vae"
+    text_encoder_path = checkpoints_dir / "Qwen3-Embedding-0.6B"
+    return _has_model_weights(vae_path) and _has_model_weights(text_encoder_path)
 
 
 def check_model_exists(model_name: str, checkpoints_dir: Optional[Path] = None) -> bool:
@@ -84,13 +105,13 @@ def check_model_exists(model_name: str, checkpoints_dir: Optional[Path] = None) 
         checkpoints_dir: Custom checkpoints directory (optional)
     
     Returns:
-        True if the model exists, False otherwise.
+        True if the model exists (with real weights), False otherwise.
     """
     if checkpoints_dir is None:
         checkpoints_dir = get_checkpoints_dir()
     
     model_path = checkpoints_dir / model_name
-    return model_path.exists()
+    return _has_model_weights(model_path)
 
 
 def list_available_models() -> Dict[str, str]:

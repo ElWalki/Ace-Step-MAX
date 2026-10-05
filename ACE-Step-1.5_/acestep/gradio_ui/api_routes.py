@@ -222,8 +222,12 @@ async def swap_llm_model(request: Request):
     model_name = body.get("model")
     backend = body.get("backend", "pt")
 
-    if not model_name:
-        return _wrap_response({"error": "Missing 'model' field"}, code=400)
+    # Empty / "none" / "unload" → UNLOAD the current LLM to free VRAM (toggle off). Without
+    # this there was no way to release the LM from memory — re-selecting the loaded model
+    # just reported "already loaded".
+    if not model_name or str(model_name).strip().lower() in ("none", "unload"):
+        msg = llm_handler.unload()
+        return _wrap_response({"success": True, "message": msg, "model": None, "backend": None}, code=200)
 
     # Validate model name
     available = llm_handler.get_available_5hz_lm_models()
@@ -288,6 +292,11 @@ async def load_model(request: Request, authorization: Optional[str] = Header(Non
     if dit_handler is None:
         raise HTTPException(status_code=500, detail="DiT handler not initialized")
 
+    # Refuse to hot-swap the model while a generation is running: re-initializing the
+    # DiT mid-diffusion corrupts the in-flight audio (ghostly / overlapping voices).
+    if getattr(dit_handler, "_is_generating", False):
+        raise HTTPException(status_code=409, detail="A generation is in progress. Wait for it to finish before switching models.")
+
     try:
         # Re-initialize service with the requested model config path.
         # Preserve current device/offload settings where possible.
@@ -315,6 +324,29 @@ async def load_model(request: Request, authorization: Optional[str] = Header(Non
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/v1/models/load_status")
+async def models_load_status():
+    """Current model-loading progress (for the UI's real-time 'Loading shards' bar)."""
+    from acestep.handler import MODEL_LOAD_PROGRESS
+    return _wrap_response(dict(MODEL_LOAD_PROGRESS))
+
+
+@router.get("/v1/generation_status")
+async def generation_status():
+    """Current audio-generation progress (diffusion %), for the UI's real-time clip bar."""
+    from acestep.handler import GEN_PROGRESS
+    return _wrap_response(dict(GEN_PROGRESS))
+
+
+@router.post("/v1/generation_cancel")
+async def generation_cancel():
+    """Abort the in-flight generation: the diffusion loop raises on the next step."""
+    from acestep.handler import GEN_PROGRESS, GEN_CANCEL
+    was_active = bool(GEN_PROGRESS.get("active"))
+    GEN_CANCEL["requested"] = True
+    return _wrap_response({"cancelled": was_active, "was_active": was_active})
 
 
 @router.get("/v1/audio")
@@ -843,14 +875,19 @@ async def vram_force_cleanup(request: Request):
         # Force-unload LoRA if loaded
         if getattr(dit_handler, 'lora_loaded', False) or dit_handler._base_decoder is not None:
             try:
-                # If decoder is wrapped in PeftModel, try to merge and unload
+                # If decoder is wrapped in PeftModel, strip the adapter.
                 try:
                     from peft import PeftModel
                     if isinstance(dit_handler.model.decoder, PeftModel):
-                        dit_handler.model.decoder = dit_handler.model.decoder.merge_and_unload()
-                        actions.append("Merged PeftModel and unloaded adapter layers")
+                        # Use unload() (NOT merge_and_unload): the LoRA delta must be
+                        # DISCARDED, never baked into the base weights. Baking would
+                        # permanently contaminate the model — and any _base_decoder backup
+                        # taken afterwards — with this LoRA, which only a full server
+                        # restart could clear (causes "LoRA residue stacking" artifacts).
+                        dit_handler.model.decoder = dit_handler.model.decoder.unload()
+                        actions.append("Unloaded adapter layers (discarded, not merged)")
                 except Exception as e:
-                    actions.append(f"PeftModel merge failed: {e}")
+                    actions.append(f"PeftModel unload failed: {e}")
 
                 # Restore from backup if available
                 if dit_handler._base_decoder is not None:

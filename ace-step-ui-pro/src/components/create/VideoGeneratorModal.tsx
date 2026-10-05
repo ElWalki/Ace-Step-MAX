@@ -1,6 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Song } from '../../types';
-import { X, Play, Pause, Download, Wand2, Image as ImageIcon, Music, Video, Loader2, Palette, Layers, Zap, Type, Monitor, Aperture, Activity, Circle, Grid, Box, BarChart2, Waves, Disc, Upload, Plus, Trash2, Settings2, MousePointer2, Search, ExternalLink, Sun, Film, Minus } from 'lucide-react';
+import { X, Play, Pause, Download, Wand2, Image as ImageIcon, Music, Video, Loader2, Palette, Layers, Zap, Type, Monitor, Aperture, Activity, Circle, Grid, Box, BarChart2, Waves, Disc, Upload, Plus, Trash2, Settings2, MousePointer2, Search, ExternalLink, Sun, Film, Minus, Crop } from 'lucide-react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { useResponsive } from '../../context/ResponsiveContext';
@@ -66,6 +66,9 @@ interface TextLayer {
   font: string;
 }
 
+// Crop region as percentages of the 1920×1080 canvas — the exported video = this rectangle
+interface CropRect { x: number; y: number; w: number; h: number }
+
 interface PexelsPhoto {
   id: number;
   src: { large: string; original: string };
@@ -130,6 +133,68 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
   const [customAlbumArt, setCustomAlbumArt] = useState<string | null>(null);
   const albumArtInputRef = useRef<HTMLInputElement>(null);
   const customAlbumArtImageRef = useRef<HTMLImageElement | null>(null);
+
+  // Crop selection — output resolution = selected rectangle
+  const [cropEnabled, setCropEnabled] = useState(false);
+  const [cropRect, setCropRect] = useState<CropRect>({ x: 20, y: 20, w: 60, h: 60 });
+  const previewWrapRef = useRef<HTMLDivElement>(null);
+  // Displayed 16:9 content box inside the preview container (object-contain letterboxing)
+  const [contentBox, setContentBox] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  const cropDragRef = useRef<{ mode: 'move' | 'nw' | 'ne' | 'sw' | 'se'; startX: number; startY: number; orig: CropRect } | null>(null);
+
+  useEffect(() => {
+    if (isMobile || !isOpen) return;
+    const el = previewWrapRef.current;
+    if (!el) return;
+    const update = () => {
+      const W = el.clientWidth, H = el.clientHeight;
+      let w = W, h = W * (9 / 16);
+      if (h > H) { h = H; w = H * (16 / 9); }
+      setContentBox({ left: (W - w) / 2, top: (H - h) / 2, width: w, height: h });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isMobile, isOpen]);
+
+  const startCropDrag = (e: React.PointerEvent, mode: 'move' | 'nw' | 'ne' | 'sw' | 'se') => {
+    e.preventDefault();
+    e.stopPropagation();
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    cropDragRef.current = { mode, startX: e.clientX, startY: e.clientY, orig: { ...cropRect } };
+  };
+  const onCropDrag = (e: React.PointerEvent) => {
+    const d = cropDragRef.current;
+    if (!d || !contentBox.width) return;
+    const dx = ((e.clientX - d.startX) / contentBox.width) * 100;
+    const dy = ((e.clientY - d.startY) / contentBox.height) * 100;
+    const MIN = 10;
+    let { x, y, w, h } = d.orig;
+    if (d.mode === 'move') {
+      x = Math.max(0, Math.min(100 - w, x + dx));
+      y = Math.max(0, Math.min(100 - h, y + dy));
+    } else {
+      if (d.mode === 'nw' || d.mode === 'sw') {
+        const nx = Math.max(0, Math.min(x + w - MIN, x + dx));
+        w += x - nx; x = nx;
+      } else {
+        w = Math.max(MIN, Math.min(100 - x, w + dx));
+      }
+      if (d.mode === 'nw' || d.mode === 'ne') {
+        const ny = Math.max(0, Math.min(y + h - MIN, y + dy));
+        h += y - ny; y = ny;
+      } else {
+        h = Math.max(MIN, Math.min(100 - y, h + dy));
+      }
+    }
+    setCropRect({ x, y, w, h });
+  };
+  const endCropDrag = () => { cropDragRef.current = null; };
+
+  // Output size in px (even values — required by yuv420p)
+  const cropOutW = Math.max(2, Math.floor(((cropRect.w / 100) * 1920) / 2) * 2);
+  const cropOutH = Math.max(2, Math.floor(((cropRect.h / 100) * 1080) / 2) * 2);
 
   // Pexels Browser State
   const [showPexelsBrowser, setShowPexelsBrowser] = useState(false);
@@ -198,7 +263,8 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     if (song) {
         setTextLayers([
             { id: '1', text: song.title, x: 50, y: 85, size: 52, color: '#ffffff', font: 'Inter' },
-            { id: '2', text: song.style.toUpperCase(), x: 50, y: 92, size: 24, color: '#3b82f6', font: 'Inter' }
+            { id: '2', text: song.style.toUpperCase(), x: 50, y: 92, size: 24, color: '#3b82f6', font: 'Inter' },
+            { id: '3', text: 'ProdIAv2', x: 91, y: 7, size: 30, color: '#ffffff', font: 'Inter' }
         ]);
     }
   }, [song]);
@@ -214,6 +280,10 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
   useEffect(() => { intensitiesRef.current = intensities; }, [intensities]);
   useEffect(() => { textLayersRef.current = textLayers; }, [textLayers]);
 
+  // Ref mirror — the ffmpeg progress handler is registered once and would capture stale state
+  const exportStageRef = useRef(exportStage);
+  useEffect(() => { exportStageRef.current = exportStage; }, [exportStage]);
+
   // Load FFmpeg
   const loadFFmpeg = useCallback(async () => {
     if (ffmpegRef.current || ffmpegLoading) return;
@@ -223,26 +293,50 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
       const ffmpeg = new FFmpeg();
 
       ffmpeg.on('progress', ({ progress }: { progress: number }) => {
-        if (exportStage === 'encoding') {
-          setExportProgress(Math.round(progress * 100));
+        if (exportStageRef.current === 'encoding' && progress >= 0 && progress <= 1) {
+          setExportProgress(75 + Math.round(progress * 20));
         }
       });
 
-      const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      });
+      // Try multiple CDNs — unpkg is occasionally blocked/unreachable
+      const cdnBases = [
+        'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm',
+        'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm',
+      ];
+      let loaded = false;
+      let lastError: unknown = null;
+      for (const baseURL of cdnBases) {
+        try {
+          await ffmpeg.load({
+            coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+            wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+          });
+          loaded = true;
+          break;
+        } catch (err) {
+          lastError = err;
+          console.warn(`[Video] FFmpeg load failed from ${baseURL}:`, err);
+        }
+      }
+      if (!loaded) throw lastError ?? new Error('FFmpeg load failed');
 
       ffmpegRef.current = ffmpeg;
       setFfmpegLoaded(true);
     } catch (error) {
       console.error('Failed to load FFmpeg:', error);
-      alert('Failed to load video encoder. Please refresh and try again.');
+      alert('Failed to load video encoder. Check your internet connection (the encoder is downloaded from a CDN), then refresh and try again.');
     } finally {
       setFfmpegLoading(false);
     }
-  }, [ffmpegLoading, exportStage]);
+  }, [ffmpegLoading]);
+
+  // Free the WASM heap (hundreds of MB after an export) when the modal unmounts
+  useEffect(() => {
+    return () => {
+      try { ffmpegRef.current?.terminate(); } catch { /* ignore */ }
+      ffmpegRef.current = null;
+    };
+  }, []);
 
   // Load Background Image
   useEffect(() => {
@@ -395,7 +489,8 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
       await renderOffline();
     } catch (error) {
       console.error('Rendering failed:', error);
-      alert('Video rendering failed. Please try again.');
+      const msg = error instanceof Error ? error.message : String(error);
+      alert(`Video rendering failed: ${msg}`);
       setIsExporting(false);
       setExportStage('idle');
     }
@@ -478,6 +573,23 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     const centerX = width / 2;
     const centerY = height / 2;
 
+    // Optional crop: frames are drawn full-size, then the selected region is copied out
+    let cropCanvas: HTMLCanvasElement | null = null;
+    let cropCtx: CanvasRenderingContext2D | null = null;
+    let cropX = 0, cropY = 0;
+    let cropW = width, cropH = height;
+    if (cropEnabled) {
+      cropW = Math.max(2, Math.floor(((cropRect.w / 100) * width) / 2) * 2);
+      cropH = Math.max(2, Math.floor(((cropRect.h / 100) * height) / 2) * 2);
+      cropX = Math.max(0, Math.min(Math.round((cropRect.x / 100) * width), width - cropW));
+      cropY = Math.max(0, Math.min(Math.round((cropRect.y / 100) * height), height - cropH));
+      cropCanvas = document.createElement('canvas');
+      cropCanvas.width = cropW;
+      cropCanvas.height = cropH;
+      cropCtx = cropCanvas.getContext('2d');
+      console.log(`[Video] Crop enabled: ${cropW}x${cropH} at (${cropX},${cropY})`);
+    }
+
     setExportProgress(1);
 
     // Pre-load images via proxy to avoid CORS/tainted canvas issues
@@ -559,6 +671,28 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
     const currentEffects = effectsRef.current;
     const currentIntensities = intensitiesRef.current;
     const currentTexts = textLayersRef.current;
+
+    // Encode in segments — keeping every frame of a full song in WASM memory overflows the heap
+    const SEGMENT_FRAMES = fps * 20;
+    const segmentFiles: string[] = [];
+    const encodeSegment = async (framesInSegment: number) => {
+      const segName = `seg${String(segmentFiles.length).padStart(3, '0')}.mp4`;
+      const rc = await ffmpeg.exec([
+        '-framerate', String(fps),
+        '-i', 'frame%06d.jpg',
+        '-c:v', 'libx264',
+        '-preset', 'ultrafast',
+        '-tune', 'fastdecode',
+        '-crf', '28',
+        '-pix_fmt', 'yuv420p',
+        segName,
+      ]);
+      if (rc !== 0) throw new Error(`FFmpeg segment encode failed (exit code ${rc})`);
+      segmentFiles.push(segName);
+      for (let i = 0; i < framesInSegment; i++) {
+        await ffmpeg.deleteFile(`frame${String(i).padStart(6, '0')}.jpg`).catch(() => {});
+      }
+    };
 
     for (let frameIndex = 0; frameIndex < totalFrames; frameIndex++) {
       const time = frameIndex / fps;
@@ -814,16 +948,31 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
         ctx.fillRect(0, height - barHeight, width, barHeight);
       }
 
-      // Capture frame
-      const frameData = canvas.toDataURL('image/jpeg', 0.85);
+      // Capture frame (cropped region only when crop is enabled)
+      let frameSource: HTMLCanvasElement = canvas;
+      if (cropCanvas && cropCtx) {
+        cropCtx.drawImage(canvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+        frameSource = cropCanvas;
+      }
+      const frameData = frameSource.toDataURL('image/jpeg', 0.85);
       const base64Data = frameData.split(',')[1];
       const binaryData = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
-      await ffmpeg.writeFile(`frame${String(frameIndex).padStart(6, '0')}.jpg`, binaryData);
+      const localIndex = frameIndex % SEGMENT_FRAMES;
+      await ffmpeg.writeFile(`frame${String(localIndex).padStart(6, '0')}.jpg`, binaryData);
+      if (localIndex === SEGMENT_FRAMES - 1) {
+        await encodeSegment(SEGMENT_FRAMES);
+      }
 
       // Update progress (15-70% for frame rendering)
       if (frameIndex % 10 === 0) {
         setExportProgress(15 + Math.round((frameIndex / totalFrames) * 55));
       }
+    }
+
+    // Encode any remaining frames of the last (partial) segment
+    const remainderFrames = totalFrames % SEGMENT_FRAMES;
+    if (remainderFrames > 0) {
+      await encodeSegment(remainderFrames);
     }
 
     setExportStage('encoding');
@@ -835,26 +984,28 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
 
     setExportProgress(75);
 
-    // Encode video - use ultrafast preset for browser performance
-    console.log(`[Video] Encoding ${totalFrames} frames at ${fps}fps...`);
-    console.log('[Video] This may take a while in the browser. Please wait...');
+    // Concatenate the pre-encoded segments (stream copy) and mux the audio
+    console.log(`[Video] Muxing ${segmentFiles.length} segments (${totalFrames} frames at ${fps}fps)...`);
+
+    const concatList = segmentFiles.map(s => `file '${s}'`).join('\n');
+    await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatList));
 
     const encodeResult = await ffmpeg.exec([
-      '-framerate', String(fps),
-      '-i', 'frame%06d.jpg',
+      '-f', 'concat',
+      '-safe', '0',
+      '-i', 'concat.txt',
       '-i', 'audio.mp3',
-      '-c:v', 'libx264',
-      '-preset', 'ultrafast',  // Fastest encoding
-      '-tune', 'fastdecode',   // Optimize for fast decoding
-      '-crf', '28',            // Slightly lower quality but much faster
-      '-pix_fmt', 'yuv420p',
+      '-c:v', 'copy',
       '-c:a', 'aac',
-      '-b:a', '128k',          // Lower bitrate audio
+      '-b:a', '128k',
       '-shortest',
       '-movflags', '+faststart',
       'output.mp4'
     ]);
     console.log('[Video] FFmpeg encode result:', encodeResult);
+    if (encodeResult !== 0) {
+      throw new Error(`FFmpeg muxing failed (exit code ${encodeResult})`);
+    }
 
     setExportProgress(95);
 
@@ -890,9 +1041,10 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
 
     // Cleanup FFmpeg filesystem
     setExportProgress(98);
-    for (let i = 0; i < totalFrames; i++) {
-      await ffmpeg.deleteFile(`frame${String(i).padStart(6, '0')}.jpg`).catch(() => {});
+    for (const seg of segmentFiles) {
+      await ffmpeg.deleteFile(seg).catch(() => {});
     }
+    await ffmpeg.deleteFile('concat.txt').catch(() => {});
     await ffmpeg.deleteFile('audio.mp3').catch(() => {});
     await ffmpeg.deleteFile('output.mp4').catch(() => {});
     await audioCtx.close();
@@ -927,8 +1079,8 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
   const handleVideoFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      const url = URL.createObjectURL(file);
-      setVideoUrl(url);
+      // Revoke the previous video blob URL — video files can be 100+ MB and stay pinned otherwise
+      setVideoUrl(prev => { if (prev.startsWith('blob:')) URL.revokeObjectURL(prev); return URL.createObjectURL(file); });
       setBackgroundType('video');
     }
   };
@@ -2171,14 +2323,14 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
                     </button>
                  )}
                  <p className="text-[10px] text-zinc-600 text-center">
-                   {ffmpegLoaded ? 'Encoder ready • ' : ''}Offline rendering - faster than real-time.
+                   {ffmpegLoaded ? 'Encoder ready • ' : ''}{cropEnabled ? `Cropped output ${cropOutW}×${cropOutH} • ` : ''}Offline rendering - faster than real-time.
                  </p>
             </div>
         </div>
 
         {/* Preview Area - Desktop only */}
         {!isMobile && (
-          <div className="flex-1 bg-black relative flex flex-col">
+          <div className="flex-1 bg-black relative flex flex-col" ref={previewWrapRef}>
                <canvas
                   ref={canvasRef}
                   width={1920}
@@ -2186,14 +2338,60 @@ export const VideoGeneratorModal: React.FC<VideoGeneratorModalProps> = ({ isOpen
                   className="w-full h-full object-contain bg-[#0a0a0a]"
                />
 
+               {/* Crop selection overlay */}
+               {cropEnabled && contentBox.width > 0 && (
+                 <div className="absolute inset-0 z-10 pointer-events-none overflow-hidden">
+                   <div
+                     className="absolute border-2 border-accent-400 cursor-move pointer-events-auto touch-none"
+                     style={{
+                       left: contentBox.left + (cropRect.x / 100) * contentBox.width,
+                       top: contentBox.top + (cropRect.y / 100) * contentBox.height,
+                       width: (cropRect.w / 100) * contentBox.width,
+                       height: (cropRect.h / 100) * contentBox.height,
+                       boxShadow: '0 0 0 9999px rgba(0,0,0,0.55)',
+                     }}
+                     onPointerDown={e => startCropDrag(e, 'move')}
+                     onPointerMove={onCropDrag}
+                     onPointerUp={endCropDrag}
+                   >
+                     <span className="absolute -top-6 left-0 text-[10px] font-mono bg-black/70 text-accent-300 px-1.5 py-0.5 rounded pointer-events-none whitespace-nowrap">
+                       {cropOutW}×{cropOutH}
+                     </span>
+                     {(['nw', 'ne', 'sw', 'se'] as const).map(m => (
+                       <div
+                         key={m}
+                         onPointerDown={e => startCropDrag(e, m)}
+                         onPointerMove={onCropDrag}
+                         onPointerUp={endCropDrag}
+                         className={`absolute w-3 h-3 bg-white border border-accent-500 rounded-sm touch-none ${
+                           m === 'nw' ? '-top-1.5 -left-1.5 cursor-nwse-resize' :
+                           m === 'ne' ? '-top-1.5 -right-1.5 cursor-nesw-resize' :
+                           m === 'sw' ? '-bottom-1.5 -left-1.5 cursor-nesw-resize' :
+                           '-bottom-1.5 -right-1.5 cursor-nwse-resize'}`}
+                       />
+                     ))}
+                   </div>
+                 </div>
+               )}
+
                {/* Playback Controls Overlay */}
-               <div className="absolute bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex items-center justify-center gap-6">
+               <div className="absolute bottom-0 left-0 right-0 z-20 p-8 bg-gradient-to-t from-black/90 via-black/40 to-transparent flex items-center justify-center gap-6">
                    <button
                       onClick={togglePlay}
                       disabled={isExporting}
                       className="w-16 h-16 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 transition-transform shadow-xl hover:shadow-2xl disabled:opacity-50 disabled:cursor-not-allowed"
                    >
                        {isPlaying ? <Pause fill="black" size={24} /> : <Play fill="black" className="ml-1" size={24} />}
+                   </button>
+                   <button
+                      onClick={() => setCropEnabled(v => !v)}
+                      disabled={isExporting}
+                      className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors shadow-xl disabled:opacity-50 disabled:cursor-not-allowed ${
+                        cropEnabled ? 'bg-accent-500 text-white' : 'bg-white/10 text-white hover:bg-white/20'
+                      }`}
+                      title={cropEnabled ? `Crop active — output will be ${cropOutW}×${cropOutH}. Click to disable.` : 'Select a crop area — the video will be rendered at that region/resolution'}
+                   >
+                       <Crop size={20} />
                    </button>
                </div>
           </div>

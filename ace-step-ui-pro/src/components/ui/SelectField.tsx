@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { HelpCircle } from 'lucide-react';
+import React from 'react';
+import { useInfoPanelOptional } from '../../context/InfoPanelContext';
+import HelpTip from './HelpTip';
 
 interface SelectFieldProps {
   label: string;
@@ -11,25 +12,13 @@ interface SelectFieldProps {
 }
 
 export default function SelectField({ label, value, onChange, options, disabled, tooltip }: SelectFieldProps) {
-  const [showTip, setShowTip] = useState(false);
+  const info = useInfoPanelOptional();
+  const report = () => info?.showInfo({ label, description: tooltip, value: options.find(o => o.value === value)?.label ?? value });
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3" onMouseEnter={report} onFocusCapture={report}>
       <label className="text-xs text-surface-500 w-24 flex-shrink-0 flex items-center gap-1">
         {label}
-        {tooltip && (
-          <span className="relative inline-flex">
-            <HelpCircle
-              className="w-3 h-3 text-surface-400 hover:text-accent-400 cursor-help transition-colors"
-              onMouseEnter={() => setShowTip(true)}
-              onMouseLeave={() => setShowTip(false)}
-            />
-            {showTip && (
-              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 rounded-lg bg-surface-100 border border-surface-300/40 text-[10px] text-surface-800 leading-snug whitespace-nowrap z-50 shadow-lg">
-                {tooltip}
-              </span>
-            )}
-          </span>
-        )}
+        {tooltip && <HelpTip text={tooltip} />}
       </label>
       <select
         value={value}

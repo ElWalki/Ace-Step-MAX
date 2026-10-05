@@ -1,7 +1,7 @@
 import React, { useCallback, memo, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Music, Heart, ArrowUpDown, SortAsc, SortDesc, ThumbsDown } from 'lucide-react';
-import type { Song } from '../../types';
+import type { Song, RegionRegenOptions, RepaintRegionSpec } from '../../types';
 import SongCard from './SongCard';
 import PaginationBar from '../ui/PaginationBar';
 
@@ -22,10 +22,12 @@ interface ResultsPanelProps {
   onRenameSong?: (id: string, newTitle: string) => void;
   onLikeSong?: (id: string) => void;
   onCancelGeneration?: (jobId: string) => void;
+  onRegenerateRegion?: (song: Song, opts: RegionRegenOptions) => void;
+  onRegenerateRegions?: (song: Song, regions: RepaintRegionSpec[]) => void;
   audioRef?: React.RefObject<HTMLAudioElement>;
 }
 
-export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, onCancelGeneration, audioRef }: ResultsPanelProps) {
+export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPlaySong, onDeleteSong, onMenuAction, onSelectSong, onRenameSong, onLikeSong, onCancelGeneration, onRegenerateRegion, onRegenerateRegions, audioRef }: ResultsPanelProps) {
   const { t } = useTranslation();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(getInitPageSize);
@@ -132,7 +134,7 @@ export default memo(function ResultsPanel({ songs, currentSong, isPlaying, onPla
             onRename={onRenameSong ? (newTitle: string) => onRenameSong(song.id, newTitle) : undefined}
             onLike={onLikeSong ? () => onLikeSong(song.id) : undefined}
             onCancelGeneration={onCancelGeneration && song.isGenerating ? () => onCancelGeneration(song.id) : undefined}
-            audioRef={audioRef}
+            onRegenerateRegion={onRegenerateRegion ? (opts) => onRegenerateRegion(song, opts) : undefined}                onRegenerateRegions={onRegenerateRegions ? (regions) => onRegenerateRegions(song, regions) : undefined}            audioRef={audioRef}
           />
         ))}
       </div>

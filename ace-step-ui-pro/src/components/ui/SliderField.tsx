@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { HelpCircle } from 'lucide-react';
+import { useInfoPanelOptional } from '../../context/InfoPanelContext';
+import HelpTip from './HelpTip';
 
 interface SliderFieldProps {
   label: string;
@@ -16,10 +17,14 @@ interface SliderFieldProps {
 export default function SliderField({ label, value, onChange, min, max, step = 1, suffix, disabled, tooltip }: SliderFieldProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState('');
-  const [showTip, setShowTip] = useState(false);
   const [localValue, setLocalValue] = useState(value);
   const isDragging = useRef(false);
   const rafRef = useRef(0);
+  const info = useInfoPanelOptional();
+
+  const report = useCallback((v: number) => {
+    info?.showInfo({ label, description: tooltip, value: step < 1 ? Number(v.toFixed(2)) : v, min, max, step, unit: suffix });
+  }, [info, label, tooltip, min, max, step, suffix]);
 
   // Sync external value when not dragging
   if (!isDragging.current && localValue !== value) {
@@ -29,12 +34,13 @@ export default function SliderField({ label, value, onChange, min, max, step = 1
   const handleSliderChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const v = parseFloat(e.target.value);
     setLocalValue(v);
+    report(v);
     isDragging.current = true;
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       onChange(v);
     });
-  }, [onChange]);
+  }, [onChange, report]);
 
   const handleSliderEnd = useCallback(() => {
     isDragging.current = false;
@@ -56,23 +62,10 @@ export default function SliderField({ label, value, onChange, min, max, step = 1
   };
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex items-center gap-3" onMouseEnter={() => report(localValue)} onFocusCapture={() => report(localValue)}>
       <label className="text-xs text-surface-500 w-24 flex-shrink-0 flex items-center gap-1">
         {label}
-        {tooltip && (
-          <span className="relative inline-flex">
-            <HelpCircle
-              className="w-3 h-3 text-surface-400 hover:text-accent-400 cursor-help transition-colors"
-              onMouseEnter={() => setShowTip(true)}
-              onMouseLeave={() => setShowTip(false)}
-            />
-            {showTip && (
-              <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 rounded-lg bg-surface-100 border border-surface-300/40 text-[10px] text-surface-800 leading-snug whitespace-nowrap z-50 shadow-lg">
-                {tooltip}
-              </span>
-            )}
-          </span>
-        )}
+        {tooltip && <HelpTip text={tooltip} />}
       </label>
       <input
         type="range"

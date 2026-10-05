@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause } from 'lucide-react';
+import { Play, Pause, Maximize2, X } from 'lucide-react';
 
 interface WaveformPlayerProps {
   src: string;
@@ -23,6 +23,9 @@ export default function WaveformPlayer({
   const animRef = useRef(0);
   const activeRef = useRef(false);
   const [dragging, setDragging] = useState<'start' | 'end' | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const modalContainerRef = useRef<HTMLDivElement>(null);
+  const modalCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Mutable refs to avoid stale closures in the draw loop
   const progressRef = useRef(progress);
@@ -38,65 +41,30 @@ export default function WaveformPlayer({
 
   // Canvas dimensions — stored to avoid layout thrashing in draw
   const canvasSizeRef = useRef({ w: 0, h: 0 });
+  const modalCanvasSizeRef = useRef({ w: 0, h: 0 });
 
-  // Decode audio to extract peaks
-  useEffect(() => {
-    if (!src) return;
-    let cancelled = false;
-
-    const decode = async () => {
-      try {
-        const response = await fetch(src);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const buf = await response.arrayBuffer();
-        // OfflineAudioContext avoids Chrome's autoplay policy that suspends
-        // regular AudioContext created without a user gesture
-        const oc = new OfflineAudioContext(1, 44100, 44100);
-        const decoded = await oc.decodeAudioData(buf);
-        if (cancelled) return;
-        const raw = decoded.getChannelData(0);
-        const bars = 500;
-        const step = Math.max(1, Math.floor(raw.length / bars));
-        const p: number[] = [];
-        for (let i = 0; i < bars; i++) {
-          let max = 0;
-          for (let j = 0; j < step; j++) {
-            const v = Math.abs(raw[i * step + j] || 0);
-            if (v > max) max = v;
-          }
-          p.push(max);
-        }
-        setPeaks(p);
-      } catch {
-        // Decode failed — show flat line fallback
-        setPeaks(new Array(500).fill(0.05));
-      }
-    };
-
-    decode();
-    return () => { cancelled = true; };
-  }, [src]);
-
-  // Pure draw function — reads container dimensions directly each frame
-  // to guarantee canvas buffer always matches the visible layout.
-  const draw = useCallback(() => {
-    const container = containerRef.current;
-    const canvas = canvasRef.current;
+  // Generic draw function that paints a waveform onto any container+canvas pair
+  const drawOnCanvas = useCallback((
+    container: HTMLDivElement | null,
+    canvas: HTMLCanvasElement | null,
+    sizeRef: React.MutableRefObject<{ w: number; h: number }>,
+  ) => {
     const pk = peaksRef.current;
     if (!container || !canvas || !pk || pk.length === 0) return;
     const c = canvas.getContext('2d');
     if (!c) return;
 
     const dpr = window.devicePixelRatio || 1;
-    const w = container.offsetWidth;
-    const h = container.offsetHeight;
+    const rect = container.getBoundingClientRect();
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
     if (w === 0 || h === 0) return;
 
     // Re-sync canvas buffer when container size changes
-    if (w !== canvasSizeRef.current.w || h !== canvasSizeRef.current.h) {
+    if (w !== sizeRef.current.w || h !== sizeRef.current.h) {
       canvas.width = w * dpr;
       canvas.height = h * dpr;
-      canvasSizeRef.current = { w, h };
+      sizeRef.current = { w, h };
     }
 
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -107,7 +75,12 @@ export default function WaveformPlayer({
     const rEnd = regionEndRef.current;
     const rMode = regionModeRef.current;
 
-    const barW = Math.max(1, w / pk.length);
+    // NOTE: do NOT clamp to a 1px minimum here — that would draw all bars at a
+    // fixed 1px pitch (total = pk.length px) instead of scaling to the real
+    // container width, which pushes the painted progress ahead of the playhead
+    // and hides the right side of the waveform when the panel is narrow.
+    // Per-bar visibility is handled by the colW min below.
+    const barW = w / pk.length;
     const midY = h / 2;
     const maxHalf = h * 0.48;
     const isLight = document.documentElement.classList.contains('light');
@@ -168,6 +141,50 @@ export default function WaveformPlayer({
     }
   }, []);
 
+  // Convenience: draw both inline and modal canvases
+  const draw = useCallback(() => {
+    drawOnCanvas(containerRef.current, canvasRef.current, canvasSizeRef);
+    drawOnCanvas(modalContainerRef.current, modalCanvasRef.current, modalCanvasSizeRef);
+  }, [drawOnCanvas]);
+
+  // Decode audio to extract peaks
+  useEffect(() => {
+    if (!src) return;
+    let cancelled = false;
+
+    const decode = async () => {
+      try {
+        const response = await fetch(src);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buf = await response.arrayBuffer();
+        // OfflineAudioContext avoids Chrome's autoplay policy that suspends
+        // regular AudioContext created without a user gesture
+        const oc = new OfflineAudioContext(1, 44100, 44100);
+        const decoded = await oc.decodeAudioData(buf);
+        if (cancelled) return;
+        const raw = decoded.getChannelData(0);
+        const bars = 500;
+        const step = Math.max(1, Math.floor(raw.length / bars));
+        const p: number[] = [];
+        for (let i = 0; i < bars; i++) {
+          let max = 0;
+          for (let j = 0; j < step; j++) {
+            const v = Math.abs(raw[i * step + j] || 0);
+            if (v > max) max = v;
+          }
+          p.push(max);
+        }
+        setPeaks(p);
+      } catch {
+        // Decode failed — show flat line fallback
+        setPeaks(new Array(500).fill(0.05));
+      }
+    };
+
+    decode();
+    return () => { cancelled = true; };
+  }, [src]);
+
   // rAF loop — separate from draw, guarded by activeRef
   useEffect(() => {
     if (!peaks || peaks.length === 0) return;
@@ -194,8 +211,43 @@ export default function WaveformPlayer({
     };
   }, [peaks, draw]);
 
+  // ResizeObserver — force canvas buffer resync when container size changes
+  // (e.g. when the user drags the panel divider or the window resizes)
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const ro = new ResizeObserver(() => {
+      // Invalidate cached size so draw() re-creates the canvas buffer
+      canvasSizeRef.current = { w: 0, h: 0 };
+      draw();
+    });
+
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [peaks, draw]);
+
   // Redraw on region changes (when not playing, loop may still be running)
   useEffect(() => { draw(); }, [regionStart, regionEnd, regionMode, draw]);
+
+  // Modal canvas: observe size + initial draw
+  useEffect(() => {
+    if (!expanded) return;
+    // Invalidate so first draw creates buffer at correct size
+    modalCanvasSizeRef.current = { w: 0, h: 0 };
+    // Small delay for DOM to mount
+    const raf = requestAnimationFrame(() => draw());
+
+    const container = modalContainerRef.current;
+    if (!container) return () => cancelAnimationFrame(raf);
+
+    const ro = new ResizeObserver(() => {
+      modalCanvasSizeRef.current = { w: 0, h: 0 };
+      draw();
+    });
+    ro.observe(container);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [expanded, draw]);
 
   const togglePlay = useCallback(() => {
     const a = audioRef.current;
@@ -204,10 +256,11 @@ export default function WaveformPlayer({
     else { a.pause(); setIsPlaying(false); }
   }, []);
 
-  // Seek on click (non-region mode)
+  // Seek on click (non-region mode) — works on both inline & modal canvas
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (dragging || regionMode) return;
-    const rect = containerRef.current?.getBoundingClientRect();
+    const parent = (e.target as HTMLElement).parentElement;
+    const rect = parent?.getBoundingClientRect();
     const a = audioRef.current;
     if (!rect || !a) return;
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -218,9 +271,10 @@ export default function WaveformPlayer({
 
   // Drag-to-seek for playback position (non-region mode)
   const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const parent = (e.target as HTMLElement).parentElement;
     if (regionMode) {
       // Region handle drag
-      const rect = containerRef.current?.getBoundingClientRect();
+      const rect = parent?.getBoundingClientRect();
       if (!rect) return;
       const pct = (e.clientX - rect.left) / rect.width;
       const ds = Math.abs(pct - regionStart);
@@ -232,7 +286,7 @@ export default function WaveformPlayer({
       return;
     }
     // Non-region: drag-to-seek playback position
-    const rect = containerRef.current?.getBoundingClientRect();
+    const rect = parent?.getBoundingClientRect();
     const a = audioRef.current;
     if (!rect || !a || !a.duration) return;
     e.preventDefault();
@@ -258,7 +312,8 @@ export default function WaveformPlayer({
   useEffect(() => {
     if (!dragging) return;
     const move = (e: MouseEvent) => {
-      const rect = containerRef.current?.getBoundingClientRect();
+      const container = expanded ? modalContainerRef.current : containerRef.current;
+      const rect = container?.getBoundingClientRect();
       if (!rect) return;
       const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       if (dragging === 'start') onRegionChange?.(Math.min(pct, regionEnd - 0.02), regionEnd);
@@ -268,35 +323,83 @@ export default function WaveformPlayer({
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
     return () => { document.removeEventListener('mousemove', move); document.removeEventListener('mouseup', up); };
-  }, [dragging, regionStart, regionEnd, onRegionChange]);
+  }, [dragging, regionStart, regionEnd, onRegionChange, expanded]);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
 
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5">
       <audio ref={audioRef} src={src} preload="metadata" className="hidden"
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onEnded={() => { setIsPlaying(false); setProgress(0); progressRef.current = 0; }}
       />
-      <div className="flex items-center gap-2">
-        <button onClick={togglePlay}
-          className="p-1 rounded-md hover:bg-surface-200 text-accent-400 transition-colors shrink-0">
-          {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-        </button>
-        {peaks === null ? (
-          <div className="flex-1 h-10 rounded bg-surface-100 animate-pulse" />
-        ) : (
-          <div ref={containerRef} className={`flex-1 min-w-0 h-10 rounded overflow-hidden relative ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
-            <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
-              className="absolute inset-0 w-full h-full"
-            />
+
+      {/* Waveform — full-width with overlaid controls */}
+      {peaks === null ? (
+        <div className="w-full h-12 rounded-lg bg-surface-100 animate-pulse" />
+      ) : (
+        <div ref={containerRef}
+          className={`w-full h-12 rounded-lg overflow-hidden relative group ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
+          <canvas ref={canvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
+            className="absolute inset-0 w-full h-full"
+          />
+          {/* Overlay controls — visible on hover or when playing */}
+          <div className={`absolute inset-0 flex items-center justify-between px-1 pointer-events-none transition-opacity ${isPlaying ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+            <button onClick={e => { e.stopPropagation(); togglePlay(); }}
+              className="pointer-events-auto p-1 rounded-full bg-black/40 hover:bg-black/60 text-white/90 transition-all backdrop-blur-sm">
+              {isPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+            </button>
+            <button onClick={e => { e.stopPropagation(); setExpanded(true); }}
+              className="pointer-events-auto p-1 rounded-full bg-black/40 hover:bg-black/60 text-white/90 transition-all backdrop-blur-sm"
+              title="Expand waveform">
+              <Maximize2 className="w-3 h-3" />
+            </button>
           </div>
-        )}
-      </div>
-      <div className="flex items-center justify-between px-1">
+        </div>
+      )}
+
+      {/* Info row */}
+      <div className="flex items-center justify-between px-0.5">
         <span className="text-[10px] text-surface-500 truncate max-w-[60%]">{title || ''}</span>
         <span className="text-[10px] text-surface-400 tabular-nums">{fmt(progress * duration)} / {fmt(duration)}</span>
       </div>
+
+      {/* Expanded modal */}
+      {expanded && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={e => { if (e.target === e.currentTarget) setExpanded(false); }}>
+          <div className="w-[90vw] max-w-3xl bg-surface-100 border border-surface-300 rounded-2xl shadow-2xl p-5 space-y-3">
+            {/* Header */}
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-surface-700 truncate">{title || 'Waveform'}</span>
+              <button onClick={() => setExpanded(false)}
+                className="p-1 rounded-md hover:bg-surface-200 text-surface-400 hover:text-surface-700 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Large waveform */}
+            <div ref={modalContainerRef}
+              className={`w-full h-32 rounded-lg overflow-hidden relative ${regionMode ? 'cursor-col-resize' : 'cursor-pointer'}`}>
+              <canvas ref={modalCanvasRef} onClick={handleClick} onMouseDown={handleMouseDown}
+                className="absolute inset-0 w-full h-full"
+              />
+            </div>
+            {/* Controls */}
+            <div className="flex items-center gap-3">
+              <button onClick={togglePlay}
+                className="p-1.5 rounded-lg bg-accent-500/10 hover:bg-accent-500/20 text-accent-400 transition-colors">
+                {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+              </button>
+              <span className="text-xs text-surface-500 tabular-nums">{fmt(progress * duration)} / {fmt(duration)}</span>
+              {regionMode && (
+                <span className="text-xs text-purple-400 ml-auto">
+                  Region: {((regionStart) * 100).toFixed(0)}% – {((regionEnd) * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sparkles, Wand2, Upload, X, Dice5, Loader2, Mic, Music, Sliders, Piano, Save, FolderOpen, Trash2, Cpu, ChevronDown, Check, Palette, Download, RefreshCw, Disc3, Paintbrush, ListMusic } from 'lucide-react';
+import { Sparkles, Wand2, Upload, X, Dice5, Loader2, Mic, Music, Sliders, Piano, Save, FolderOpen, Trash2, Cpu, ChevronDown, Check, Palette, Download, RefreshCw, Disc3, Paintbrush, ListMusic, Info, RotateCcw, Pin, PinOff, Lock, Unlock, Eraser } from 'lucide-react';
 import CollapsibleSection from '../ui/CollapsibleSection';
 import SliderField from '../ui/SliderField';
 import SelectField from '../ui/SelectField';
@@ -11,17 +11,23 @@ import SectionControls, { SECTION_TAGS } from './SectionControls';
 import LoraManager from './LoraManager';
 import MicRecorder from './MicRecorder';
 import GpuMiniBar from './GpuMiniBar';
+import SnippetMenu, { Snippet } from './SnippetMenu';
+import DropdownPortal from '../ui/DropdownPortal';
 import QuickParamsPanel from './QuickParamsPanel';
 import StyleDnaPanel from './StyleDnaPanel';
+import InfoPanel from '../ui/InfoPanel';
 import {
   GenerationParams, DEFAULT_PARAMS,
   KEY_SIGNATURES, TIME_SIGNATURES, VOCAL_LANGUAGES,
   ChordProgressionState, ChordApplyData,
   StyleDna, DEFAULT_STYLE_DNA, buildStyleDnaTags, styleDnaToModelParams,
   TagCadence, DEFAULT_TAG_CADENCES, buildTagCadenceHints,
+  CAPTION_BOOSTERS, TIMESTEP_SHAPES, GENERATION_MODES, validateTimesteps, detectGenerationMode, buildTimestepSchedule,
+  TimestepShape, consistencyToParams, CONSISTENCY_NEUTRAL,
 } from '../../types';
-import { generateApi } from '../../services/api';
+import { generateApi, preferencesApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useInfoPanel } from '../../context/InfoPanelContext';
 
 interface CreatePanelProps {
   onGenerate: (params: GenerationParams) => void;
@@ -33,13 +39,73 @@ interface CreatePanelProps {
   generationStage?: string;
 }
 
+// Lightweight audio duration probe (reads metadata only, no full decode). 0 if unknown.
+function probeAudioDuration(url: string): Promise<number> {
+  return new Promise((resolve) => {
+    try {
+      const a = new Audio();
+      a.preload = 'metadata';
+      let settled = false;
+      const done = (v: number) => { if (settled) return; settled = true; try { a.src = ''; } catch { /* noop */ } resolve(v > 0 && isFinite(v) ? v : 0); };
+      a.onloadedmetadata = () => done(a.duration);
+      a.onerror = () => done(0);
+      a.src = url;
+      setTimeout(() => done(0), 4000);
+    } catch { resolve(0); }
+  });
+}
+
+// Working-draft persistence: survive browser refresh/crash without losing the form config.
+const DRAFT_PARAMS_KEY = 'prodia_draft_params';
+// Heavy/transient fields that must NOT be written to localStorage (data URLs can be many MB and
+// would blow the ~5 MB quota, silently discarding the whole draft).
+// LoRA fields are SERVER state, not form state — persisting them resurrected unloaded adapters.
+const DRAFT_EXCLUDE_KEYS: (keyof GenerationParams)[] = [
+  'referenceAudioUrl', 'sourceAudioUrl', 'vocalAudioUrl', 'audioCodes',
+  'loraPath', 'loraName', 'loraLoaded', 'loraEnabled', 'loraScale', 'loraTriggerTag', 'loraTagPosition',
+];
+
+// Per-field saved texts (prompt / style / lyrics), reusable within and across sessions
+type SnippetStore = { prompts: Snippet[]; styles: Snippet[]; lyrics: Snippet[] };
+const EMPTY_SNIPPETS: SnippetStore = { prompts: [], styles: [], lyrics: [] };
+
+function buildDraft(params: GenerationParams): Partial<GenerationParams> {
+  const draft: Record<string, unknown> = { ...params };
+  for (const k of DRAFT_EXCLUDE_KEYS) delete draft[k as string];
+  // Also drop any residual data: URLs that slipped through under other keys.
+  for (const [k, v] of Object.entries(draft)) {
+    if (typeof v === 'string' && v.startsWith('data:')) delete draft[k];
+  }
+  return draft as Partial<GenerationParams>;
+}
+
 export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCount, reuseParams, onReuseConsumed, generationProgress, generationStage }: CreatePanelProps) {
   const { t } = useTranslation();
   const { token } = useAuth();
-  const [params, setParams] = useState<GenerationParams>({ ...DEFAULT_PARAMS });
+  const infoPanel = useInfoPanel();
+  const [params, setParams] = useState<GenerationParams>(() => {
+    // Restore the guidance scale from a previous session when the user "locked" it
+    const base = { ...DEFAULT_PARAMS };
+    try {
+      if (localStorage.getItem('prodia_pin_guidance') === 'true') {
+        const saved = localStorage.getItem('prodia_guidance_value');
+        const v = saved != null ? parseFloat(saved) : NaN;
+        if (!Number.isNaN(v)) base.guidanceScale = v;
+      }
+    } catch { /* ignore */ }
+    // Restore the full working draft so a browser refresh/crash doesn't wipe the form
+    try {
+      const draftRaw = localStorage.getItem(DRAFT_PARAMS_KEY);
+      if (draftRaw) {
+        const draft = JSON.parse(draftRaw);
+        if (draft && typeof draft === 'object') return { ...base, ...draft };
+      }
+    } catch { /* ignore */ }
+    return base;
+  });
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     text: true, music: true, voice: false, styleDna: false, generation: false,
-    lm: false, audio: false, expert: false,
+    lm: false, audio: false, expert: false, experimental: false,
   });
   const [styleDna, setStyleDna] = useState<StyleDna>({ ...DEFAULT_STYLE_DNA });
   const [tagCadences, setTagCadences] = useState<Record<string, TagCadence>>({ ...DEFAULT_TAG_CADENCES });
@@ -52,6 +118,13 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
 
   // LoRA state
   const [showLoraManager, setShowLoraManager] = useState(false);
+  const [stickyTools, setStickyTools] = useState<boolean>(() => {
+    try { return localStorage.getItem('prodia_sticky_tools') !== 'false'; } catch { return true; }
+  });
+  // When locked, the guidance scale value is remembered across app restarts
+  const [pinGuidance, setPinGuidance] = useState<boolean>(() => {
+    try { return localStorage.getItem('prodia_pin_guidance') === 'true'; } catch { return false; }
+  });
   const [loraLoaded, setLoraLoaded] = useState(false);
   const [loraEnabled, setLoraEnabled] = useState(true);
   const [loraScale, setLoraScale] = useState(1.0);
@@ -59,6 +132,8 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
   const [loraTriggerTag, setLoraTriggerTag] = useState('');
   const [loraTagPosition, setLoraTagPosition] = useState('prepend');
   const [selectedLoraName, setSelectedLoraName] = useState('');
+  const [loraWarning, setLoraWarning] = useState('');
+  const [tagQuery, setTagQuery] = useState<string | null>(null);
 
   // Chord editor state
   const [chordState, setChordState] = useState<ChordProgressionState>({
@@ -66,65 +141,162 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
   });
   const [showChordModal, setShowChordModal] = useState(false);
 
-  // Template state
+  // Template state — persisted server-side (survives browser change & restart), with localStorage cache
   const TEMPLATES_KEY = 'prodia_templates';
+  const prefsRef = useRef<Record<string, unknown>>({});
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [templateName, setTemplateName] = useState('');
   const [savedTemplates, setSavedTemplates] = useState<{ name: string; params: GenerationParams }[]>(() => {
     try { return JSON.parse(localStorage.getItem(TEMPLATES_KEY) || '[]'); } catch { return []; }
   });
+  const persistTemplates = useCallback((updated: { name: string; params: GenerationParams }[]) => {
+    setSavedTemplates(updated);
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(updated));
+    if (token) {
+      prefsRef.current = { ...prefsRef.current, templates: updated };
+      preferencesApi.set(prefsRef.current, token).catch(() => {});
+    }
+  }, [token]);
   const saveTemplate = useCallback(() => {
     const name = templateName.trim() || `Template ${savedTemplates.length + 1}`;
     const updated = [...savedTemplates.filter(t => t.name !== name), { name, params: { ...params } }];
-    setSavedTemplates(updated);
-    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(updated));
+    persistTemplates(updated);
     setTemplateName('');
     setShowTemplateMenu(false);
-  }, [templateName, savedTemplates, params]);
+  }, [templateName, savedTemplates, params, persistTemplates]);
   const loadTemplate = useCallback((t: { name: string; params: GenerationParams }) => {
     setParams(p => ({ ...p, ...t.params }));
     setShowTemplateMenu(false);
   }, []);
   const deleteTemplate = useCallback((name: string) => {
-    const updated = savedTemplates.filter(t => t.name !== name);
-    setSavedTemplates(updated);
-    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(updated));
-  }, [savedTemplates]);
+    persistTemplates(savedTemplates.filter(t => t.name !== name));
+  }, [savedTemplates, persistTemplates]);
+
+  // Snippet state — saved prompts/styles/lyrics, persisted like templates (server + localStorage cache)
+  const SNIPPETS_KEY = 'prodia_snippets';
+  const [snippets, setSnippets] = useState<SnippetStore>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SNIPPETS_KEY) || '{}');
+      return { ...EMPTY_SNIPPETS, ...(raw && typeof raw === 'object' ? raw : {}) };
+    } catch { return { ...EMPTY_SNIPPETS }; }
+  });
+  const persistSnippets = useCallback((updated: SnippetStore) => {
+    setSnippets(updated);
+    try { localStorage.setItem(SNIPPETS_KEY, JSON.stringify(updated)); } catch { /* ignore */ }
+    if (token) {
+      prefsRef.current = { ...prefsRef.current, snippets: updated };
+      preferencesApi.set(prefsRef.current, token).catch(() => {});
+    }
+  }, [token]);
+  const saveSnippet = useCallback((kind: keyof SnippetStore, name: string, value: string) => {
+    persistSnippets({ ...snippets, [kind]: [...snippets[kind].filter(s => s.name !== name), { name, value }] });
+  }, [snippets, persistSnippets]);
+  const deleteSnippet = useCallback((kind: keyof SnippetStore, name: string) => {
+    persistSnippets({ ...snippets, [kind]: snippets[kind].filter(s => s.name !== name) });
+  }, [snippets, persistSnippets]);
+
+  // Restore all creation parameters to their defaults ("undo" if settings go wrong)
+  const handleResetParams = useCallback(() => {
+    if (typeof window !== 'undefined' && !window.confirm(t('create.resetConfirm', 'Restore all parameters to their default values?'))) return;
+    setParams({ ...DEFAULT_PARAMS });
+    setStyleDna({ ...DEFAULT_STYLE_DNA });
+    setTagCadences({ ...DEFAULT_TAG_CADENCES });
+    try { localStorage.removeItem(DRAFT_PARAMS_KEY); } catch { /* ignore */ }
+  }, [t]);
+
+  // BPM auto mode: 0 = backend auto-detects tempo (from style / reference / cover audio)
+  const lastManualBpmRef = useRef(120);
+  const toggleAutoBpm = useCallback(() => {
+    setParams(p => {
+      if (p.bpm === 0) return { ...p, bpm: lastManualBpmRef.current || 120 };
+      if (p.bpm > 0) lastManualBpmRef.current = p.bpm;
+      return { ...p, bpm: 0 };
+    });
+  }, []);
+
+  // Experimental: toggle a caption booster on/off individually
+  const toggleBooster = useCallback((id: string) => {
+    setParams(p => {
+      const cur = p.captionBoosters || [];
+      return {
+        ...p,
+        captionBoosters: cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id],
+      };
+    });
+  }, []);
+
+  const timestepsCheck = useMemo(() => validateTimesteps(params.customTimesteps), [params.customTimesteps]);
+  const generationMode = detectGenerationMode(params);
+  // Plain (non-XL) base checkpoint's generate_audio() has no `timesteps` kwarg — silently ignored there.
+  const timestepsUnsupported = params.ditModel === 'acestep-v15-base';
+  const [tsShape, setTsShape] = useState<TimestepShape>('linear');
+  const [tsSteps, setTsSteps] = useState<number>(params.inferenceSteps);
+  const applyTimestepShape = useCallback((shape: TimestepShape, steps: number) => {
+    setTsShape(shape);
+    setParams(p => ({ ...p, customTimesteps: buildTimestepSchedule(steps, shape) }));
+  }, []);
+
+  // Consistency macro: local slider position; applying overwrites the underlying LM/DiT knobs
+  const [consistency, setConsistency] = useState<number>(CONSISTENCY_NEUTRAL);
+  const applyConsistency = useCallback((level: number) => {
+    setConsistency(level);
+    setParams(p => ({ ...p, ...consistencyToParams(level) }));
+  }, []);
 
   // DIT Model options — fallback labels for known models
   const MODEL_LABELS: Record<string, { label: string; color: string }> = {
+    'acestep-v15-xl-base': { label: 'XL Base', color: 'fuchsia' },
+    'acestep-v15-xl-sft': { label: 'XL SFT', color: 'fuchsia' },
+    'acestep-v15-xl-turbo': { label: 'XL Turbo', color: 'fuchsia' },
     'acestep-v15-sft': { label: 'SFT', color: 'accent' },
     'acestep-v15-base': { label: 'Base', color: 'emerald' },
     'acestep-v15-turbo': { label: 'Turbo', color: 'amber' },
+    'acestep-v15-turbo-shift1': { label: 'Turbo Shift1', color: 'amber' },
+    'acestep-v15-turbo-shift3': { label: 'Turbo Shift3', color: 'amber' },
+    'acestep-v15-turbo-continuous': { label: 'Turbo Cont.', color: 'amber' },
   };
 
   // Model status — which models are available in backend checkpoints
   const [availableModels, setAvailableModels] = useState<{ name: string; is_active: boolean; is_preloaded: boolean }[]>([]);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [modelLoading, setModelLoading] = useState(false);
+  const [modelLoadPct, setModelLoadPct] = useState<number | null>(null);
   const [downloadingModels, setDownloadingModels] = useState<Record<string, { progress: string; status: string }>>({});
   const [pendingDownload, setPendingDownload] = useState<string | null>(null);
   const downloadPollRef = useRef<Record<string, ReturnType<typeof setInterval>>>({});
   const modelMenuRef = useRef<HTMLDivElement>(null);
-  const templateMenuRef = useRef<HTMLDivElement>(null);
+  const templateBtnRef = useRef<HTMLButtonElement>(null);
 
-  // Close dropdowns on outside click
+  // Close dropdowns on outside click (template menu handles its own via DropdownPortal)
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (showModelMenu && modelMenuRef.current && !modelMenuRef.current.contains(e.target as Node)) {
         setShowModelMenu(false);
       }
-      if (showTemplateMenu && templateMenuRef.current && !templateMenuRef.current.contains(e.target as Node)) {
-        setShowTemplateMenu(false);
-      }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showModelMenu, showTemplateMenu]);
+  }, [showModelMenu]);
 
   const set = useCallback(<K extends keyof GenerationParams>(key: K, val: GenerationParams[K]) => {
     setParams(p => ({ ...p, [key]: val }));
   }, []);
+
+  // Persist the guidance scale between sessions while it is locked
+  useEffect(() => {
+    if (!pinGuidance) return;
+    try { localStorage.setItem('prodia_guidance_value', String(params.guidanceScale)); } catch { /* ignore */ }
+  }, [pinGuidance, params.guidanceScale]);
+
+  // Auto-save the working draft (debounced) so a browser refresh/crash never wipes the config.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      try {
+        localStorage.setItem(DRAFT_PARAMS_KEY, JSON.stringify(buildDraft(params)));
+      } catch { /* quota exceeded or serialization issue — ignore */ }
+    }, 400);
+    return () => clearTimeout(id);
+  }, [params]);
 
   // Fetch available models from backend on mount (scans checkpoints/ on disk)
   const refreshModels = useCallback(() => {
@@ -148,6 +320,20 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
 
   useEffect(() => { refreshModels(); }, []);
 
+  // Poll real model-loading progress (shard %) from the backend while a load runs.
+  useEffect(() => {
+    if (!modelLoading) { setModelLoadPct(null); return; }
+    let active = true;
+    const poll = () => {
+      generateApi.getModelLoadStatus()
+        .then(s => { if (active && s && typeof s.progress === 'number') setModelLoadPct(s.loading ? s.progress : null); })
+        .catch(() => {});
+    };
+    poll();
+    const id = setInterval(poll, 700);
+    return () => { active = false; clearInterval(id); };
+  }, [modelLoading]);
+
   // Load/swap a DiT model when user clicks it
   const handleLoadModel = useCallback(async (modelName: string) => {
     set('ditModel', modelName);
@@ -161,13 +347,22 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
       await generateApi.loadModel(modelName, token || '');
       // Purge leftover VRAM from the previous model
       await fetch('/api/vram/purge', { method: 'POST' }).catch(() => {});
+      // Swapping the model RE-INITIALIZES it and discards the LoRA server-side,
+      // so re-apply the selected LoRA to keep it active (and the UI truthful).
+      if (loraLoaded && loraPath) {
+        try {
+          await generateApi.loadLora({ lora_path: loraPath }, token || '');
+          // load_lora resets the scale to 1.0 → restore the user's value (or disable).
+          await generateApi.setLoraScale({ scale: loraEnabled ? loraScale : 0 }, token || '').catch(() => {});
+        } catch { /* re-apply failed — non-fatal, status refresh will reflect it */ }
+      }
       refreshModels();
     } catch {
       // Model swap failed — still selected in UI
     } finally {
       setModelLoading(false);
     }
-  }, [availableModels, set, token, refreshModels]);
+  }, [availableModels, set, token, refreshModels, loraLoaded, loraPath, loraEnabled, loraScale]);
 
   // Cleanup download poll intervals on unmount
   useEffect(() => {
@@ -275,11 +470,20 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
   useEffect(() => {
     if (reuseParams) {
       setParams(p => ({ ...p, ...reuseParams, customMode: true }));
+      // Switch the audio input tab so the relevant controls become visible
+      // (e.g. repaint region drag handles live in the Cover tab).
+      if (reuseParams.taskType === 'repaint' || reuseParams.taskType === 'cover' || reuseParams.sourceAudioUrl) {
+        setAudioTab('cover');
+      } else if (reuseParams.taskType === 'extend') {
+        setAudioTab('extend');
+      } else if (reuseParams.referenceAudioUrl) {
+        setAudioTab('reference');
+      }
       onReuseConsumed?.();
     }
   }, [reuseParams, onReuseConsumed]);
 
-  // Sync LoRA state from backend on mount
+  // Sync LoRA state from backend on mount (persists across browser change / restart)
   useEffect(() => {
     if (!token) return;
     generateApi.getLoraStatus(token).then(status => {
@@ -291,21 +495,64 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
         setLoraTriggerTag(status.trigger_tag ?? '');
         setLoraTagPosition(status.tag_position === 'replace' ? 'prepend' : status.tag_position ?? 'prepend');
         setSelectedLoraName(status.name ?? '');
+        // Mirror into generation params so the loaded LoRA is actually applied when generating
+        setParams(p => ({
+          ...p,
+          loraLoaded: true,
+          loraEnabled: status.active,
+          loraScale: status.scale ?? 1.0,
+          loraPath: status.path,
+          loraName: status.name ?? '',
+          loraTriggerTag: status.trigger_tag ?? '',
+        }));
+      }
+    }).catch(() => {});
+    // Load server-side preferences (templates) — survives browser change & restart
+    preferencesApi.get(token).then(({ data }) => {
+      prefsRef.current = data || {};
+      const serverTemplates = Array.isArray((data as { templates?: unknown })?.templates)
+        ? (data as { templates: { name: string; params: GenerationParams }[] }).templates
+        : null;
+      const serverSnippets = (data as { snippets?: unknown })?.snippets;
+      if (serverSnippets && typeof serverSnippets === 'object') {
+        const merged = { ...EMPTY_SNIPPETS, ...(serverSnippets as SnippetStore) };
+        setSnippets(merged);
+        try { localStorage.setItem(SNIPPETS_KEY, JSON.stringify(merged)); } catch { /* ignore */ }
+      }
+      if (serverTemplates && serverTemplates.length) {
+        setSavedTemplates(serverTemplates);
+        localStorage.setItem(TEMPLATES_KEY, JSON.stringify(serverTemplates));
+      } else {
+        // One-time migration: push any locally-cached templates up to the server
+        try {
+          const local = JSON.parse(localStorage.getItem(TEMPLATES_KEY) || '[]');
+          if (Array.isArray(local) && local.length) {
+            prefsRef.current = { ...prefsRef.current, templates: local };
+            preferencesApi.set(prefsRef.current, token).catch(() => {});
+          }
+        } catch { /* ignore */ }
       }
     }).catch(() => {});
   }, [token]);
 
   // Swap LM model handler
-  const handleSwapLm = useCallback(async (modelPath: string, backend: string) => {
+  const handleSwapLm = useCallback(async (modelPath: string, backend: string, isActive = false) => {
     if (!token || lmSwapping) return;
     setLmSwapping(true);
     try {
-      const r = await generateApi.swapLlmModel(modelPath, backend, token);
-      if (r.success) {
-        setCurrentLmModel(r.model);
-        setCurrentLmBackend(r.backend);
-        set('lmModel', modelPath);
-        set('lmBackend', backend as 'pt' | 'vllm');
+      if (isActive) {
+        // Clicking the already-loaded model unloads it from VRAM (toggle off).
+        await generateApi.swapLlmModel('none', backend, token);
+        setCurrentLmModel(null);
+        setCurrentLmBackend(null);
+      } else {
+        const r = await generateApi.swapLlmModel(modelPath, backend, token);
+        if (r.success) {
+          setCurrentLmModel(r.model);
+          setCurrentLmBackend(r.backend);
+          set('lmModel', modelPath);
+          set('lmBackend', backend as 'pt' | 'vllm');
+        }
       }
     } catch { /* ignore */ } finally {
       setLmSwapping(false);
@@ -316,14 +563,29 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   }, []);
 
-  const handleGenerate = useCallback(() => {
+  const handleGenerate = useCallback(async () => {
     if (isGenerating && activeJobCount >= 4) return;
 
     let finalParams = { ...params };
 
+    // Roll a FRESH random seed on every generation while "random seed" is enabled, so the
+    // exact value is known, recorded with the song and shown on the clip (instead of a
+    // static 0 or the last manual seed). We stamp it into `seed` here so it round-trips
+    // through the backend and into the saved generation params. Single generations only —
+    // multi-item batches keep engine-side per-variation seeding so the variations differ.
+    if (finalParams.randomSeed && (finalParams.batchSize ?? 1) <= 1) {
+      finalParams.seed = Math.floor(Math.random() * 4294967295) + 1;
+    }
+
     // Duration 0 → auto (-1 for backend)
     if (finalParams.duration === 0) {
       finalParams.duration = -1;
+    }
+
+    // Never ship an invalid timestep schedule: the backend would either drop it or corrupt the take silently.
+    const tsCheck = validateTimesteps(finalParams.customTimesteps);
+    if (tsCheck && !tsCheck.ok) {
+      finalParams.customTimesteps = undefined;
     }
 
     // Inject singer gender tag into the prompt/style
@@ -384,6 +646,23 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
       finalParams.styleDna = styleDna;
     }
 
+    // Caption boosters — individually toggled tag packs appended to the caption
+    if (finalParams.captionBoosters?.length) {
+      const boosterTags = CAPTION_BOOSTERS
+        .filter(b => finalParams.captionBoosters!.includes(b.id))
+        .map(b => b.tags)
+        .join(', ');
+      if (boosterTags) {
+        if (finalParams.customMode) {
+          finalParams.style = finalParams.style ? `${finalParams.style}, ${boosterTags}` : boosterTags;
+        } else {
+          finalParams.songDescription = finalParams.songDescription
+            ? `${finalParams.songDescription}, ${boosterTags}`
+            : boosterTags;
+        }
+      }
+    }
+
     // Section mode overrides
     if (finalParams.sectionMode) {
       finalParams.batchSize = 1;
@@ -392,6 +671,21 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
       const mv = (finalParams.melodicVariation ?? 0) / 100;
       if (!finalParams.lmRepetitionPenalty || finalParams.lmRepetitionPenalty === 1.0) {
         finalParams.lmRepetitionPenalty = 1.0 + mv * 0.5;
+      }
+    }
+
+    // Repaint region: the UI stores the selection as a 0-1 fraction, but the repaint backend
+    // expects ABSOLUTE SECONDS. Convert using the source audio duration before sending.
+    if (finalParams.taskType === 'repaint' && finalParams.sourceAudioUrl) {
+      const rs = finalParams.repaintingStart ?? 0;
+      const re = finalParams.repaintingEnd ?? 1;
+      // The region handles / expert sliders always produce a 0-1 fraction; convert those to seconds.
+      if (rs >= 0 && rs <= 1 && re > 0 && re <= 1 && re > rs) {
+        const dur = await probeAudioDuration(finalParams.sourceAudioUrl);
+        if (dur > 0) {
+          finalParams.repaintingStart = +(rs * dur).toFixed(2);
+          finalParams.repaintingEnd = +(re * dur).toFixed(2);
+        }
       }
     }
 
@@ -461,6 +755,8 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
     if (!token) return;
     try {
       const r = await generateApi.loadLora({ lora_path: path }, token);
+      // Surface a base-model compatibility warning (e.g. an SFT/turbo LoRA on an XL model).
+      setLoraWarning(r.message && /⚠|INCOMPATIBLE|mismatch/i.test(r.message) ? r.message : '');
       // Load resets Python handler scale to 1.0 — re-apply desired scale
       const desiredScale = initialScale ?? loraScale;
       if (desiredScale !== 1.0) {
@@ -491,10 +787,46 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
       setLoraPath('');
       setSelectedLoraName('');
       setLoraTriggerTag('');
-      set('loraLoaded', false);
-      set('loraPath', undefined);
+      setLoraWarning('');
+      // Clear EVERY lora field from params — any leftover (loraName/Scale/Tag)
+      // kept resurrecting the adapter in later requests
+      setParams(p => ({
+        ...p,
+        loraLoaded: false,
+        loraEnabled: false,
+        loraPath: undefined,
+        loraName: undefined,
+        loraScale: undefined,
+        loraTriggerTag: undefined,
+        loraTagPosition: undefined,
+      }));
     } catch { /* ignore */ }
-  }, [token, set]);
+  }, [token]);
+
+  // Deep clean: force-remove ANY adapter server-side even when the panel thinks none
+  // is loaded (e.g. auto-loaded by a repaint or left over from a previous session).
+  const handleLoraDeepClean = useCallback(async () => {
+    if (!token) return;
+    try { await generateApi.setLoraScale({ scale: 0 }, token); } catch { /* ignore */ }
+    try { await generateApi.unloadLora(token); } catch { /* ignore */ }
+    setLoraLoaded(false);
+    setLoraEnabled(false);
+    setLoraScale(1.0);
+    setLoraPath('');
+    setSelectedLoraName('');
+    setLoraTriggerTag('');
+    setLoraWarning('');
+    setParams(p => ({
+      ...p,
+      loraLoaded: false,
+      loraEnabled: false,
+      loraPath: undefined,
+      loraName: undefined,
+      loraScale: undefined,
+      loraTriggerTag: undefined,
+      loraTagPosition: undefined,
+    }));
+  }, [token]);
 
   const handleLoraToggle = useCallback(async () => {
     if (!token) return;
@@ -624,21 +956,22 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
     }
   }, [audioTab, set, params.customMode, handleAudioSectionUpload, addToAudioHistory]);
 
-  // Workflow mode handler
+  // Workflow mode handler — click an active mode again to turn it OFF (back to text2music)
   const handleWorkflowMode = useCallback((mode: 'cover' | 'repaint' | 'extend') => {
+    const targetTask = mode === 'extend' ? 'complete' : mode;
+    // Toggle off: if this mode is already active, return to normal text→music generation.
+    if (params.taskType === targetTask) {
+      set('taskType', undefined);
+      set('sourceAudioUrl', undefined);
+      set('sourceAudioTitle', undefined);
+      set('audioCoverStrength', undefined);
+      return;
+    }
     set('customMode', true);
     setOpenSections(prev => ({ ...prev, text: true, expert: true }));
-    if (mode === 'cover') {
-      set('taskType', 'cover');
-      setAudioTab('cover');
-    } else if (mode === 'repaint') {
-      set('taskType', 'repaint');
-      setAudioTab('cover');
-    } else {
-      set('taskType', 'complete');
-      setAudioTab('extend');
-    }
-  }, [set]);
+    set('taskType', targetTask);
+    setAudioTab(mode === 'extend' ? 'extend' : 'cover');
+  }, [set, params.taskType]);
 
   // Mic recording accept
   const handleMicAccept = useCallback(async (blob: Blob, filename: string) => {
@@ -729,7 +1062,7 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
       )}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {/* Model switcher + Templates bar */}
-        <div className="flex items-center gap-1.5 mb-1">
+        <div className={`flex items-center gap-1.5 mb-1 flex-wrap ${stickyTools ? 'sticky top-0 z-20 -mx-4 px-4 -mt-4 pt-4 pb-2 bg-surface-50/95 backdrop-blur-sm border-b border-surface-200/60' : ''}`}>
           {/* DiT Model selector */}
           <div className="relative" ref={modelMenuRef}>
             <button
@@ -774,8 +1107,9 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                     >
                       <button
                         onClick={() => handleLoadModel(m.name)}
-                        disabled={modelLoading || (!m.is_preloaded && !dl)}
-                        className="flex-1 min-w-0 text-left disabled:opacity-40"
+                        disabled={modelLoading}
+                        className={`flex-1 min-w-0 text-left disabled:opacity-40 ${!m.is_preloaded ? 'opacity-70' : ''}`}
+                        title={!m.is_preloaded ? 'Modelo no descargado — se seleccionará pero no se cargará hasta descargarlo' : undefined}
                       >
                         <span className={`text-xs font-semibold block ${isSelected ? 'text-accent-400' : 'text-surface-800'}`}>
                           {displayLabel}
@@ -835,6 +1169,118 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
             )}
           </div>
 
+          {/* Quick load / download for the SELECTED model (beside the dropdown) */}
+          {(() => {
+            const modelName = params.ditModel;
+            if (!modelName) return null;
+            const sel = availableModels.find(m => m.name === modelName);
+            const dl = downloadingModels[modelName];
+            // Downloading → live progress
+            if (dl?.status === 'downloading') {
+              return (
+                <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-blue-500/10 text-blue-400 text-[11px] font-medium">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  {dl.progress}
+                </span>
+              );
+            }
+            // Not on disk → red Download button
+            if (sel && !sel.is_preloaded) {
+              return (
+                <button
+                  onClick={() => setPendingDownload(modelName)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 text-[11px] font-semibold transition-colors"
+                  title={t('create.downloadModel', 'Download model')}
+                >
+                  <Download className="w-3 h-3" />
+                  {t('create.download', 'Download')}
+                </button>
+              );
+            }
+            // On disk but not loaded → Load button
+            if (sel?.is_preloaded && !sel.is_active) {
+              return (
+                <button
+                  onClick={() => handleLoadModel(modelName)}
+                  disabled={modelLoading}
+                  className="flex items-center gap-1 px-2 py-1 rounded-lg bg-accent-500/10 border border-accent-500/30 text-accent-400 hover:bg-accent-500/20 text-[11px] font-semibold transition-colors disabled:opacity-50"
+                  title={t('create.loadModel', 'Load selected model')}
+                >
+                  {modelLoading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Cpu className="w-3 h-3" />}
+                  {t('create.loadBtn', 'Load')}
+                </button>
+              );
+            }
+            // Already loaded/active → nothing (the dropdown trigger shows the check)
+            return null;
+          })()}
+
+          {/* Currently-loaded (active) checkpoint — shown when it differs from the selected one */}
+          {(() => {
+            const activeModel = availableModels.find(m => m.is_active);
+            if (!activeModel || activeModel.name === params.ditModel) return null;
+            const label = MODEL_LABELS[activeModel.name]?.label || activeModel.name.replace('acestep-v15-', '');
+            return (
+              <span
+                className="flex items-center gap-1 px-1.5 py-1 rounded-lg bg-green-500/10 text-green-400 text-[10px] font-medium"
+                title={`${t('create.activeCheckpoint', 'Loaded checkpoint')}: ${activeModel.name}`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                {label}
+              </span>
+            );
+          })()}
+
+          {/* Real-time model-loading (checkpoint shards) progress */}
+          {modelLoading && (
+            <div className="flex items-center gap-1.5" title={t('create.loadingModel', 'Loading model…')}>
+              <span className="text-[10px] text-accent-400 font-mono tabular-nums w-8 text-right">
+                {modelLoadPct != null ? `${modelLoadPct}%` : '…'}
+              </span>
+              <div className="w-16 h-1 rounded-full bg-surface-300 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-accent-500 to-brand-500 transition-all duration-300 ease-out"
+                  style={{ width: `${modelLoadPct ?? 10}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* LoRA selector — next to the model selector; opens the LoRA manager */}
+          <button
+            onClick={() => setShowLoraManager(true)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors ${
+              loraLoaded
+                ? (loraWarning ? 'bg-amber-500/10 border-amber-500/40 text-amber-400' : 'bg-brand-500/10 border-brand-500/30 text-brand-400')
+                : 'bg-surface-100 border-surface-300/40 text-surface-500 hover:border-brand-500/40'
+            }`}
+            title={loraLoaded ? (loraWarning || `LoRA: ${selectedLoraName}`) : t('lora.openManager', 'Open LoRA Manager')}
+          >
+            <Sliders className="w-3 h-3 shrink-0" />
+            <span className="font-semibold truncate max-w-[90px]">{loraLoaded ? (selectedLoraName || 'LoRA') : 'LoRA'}</span>
+            {loraLoaded && (
+              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${loraWarning ? 'bg-amber-400' : (loraEnabled ? 'bg-green-400' : 'bg-surface-400')}`} />
+            )}
+          </button>
+
+          {/* Deep-clean: force-unload any adapter even if the panel shows none loaded */}
+          <button
+            onClick={handleLoraDeepClean}
+            className="p-1 rounded-md text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
+            title={t('lora.deepClean', 'Limpieza profunda del LoRA: desactiva y descarga cualquier adaptador activo en el servidor (aunque aquí no aparezca cargado)')}
+          >
+            <Eraser className="w-3.5 h-3.5" />
+          </button>
+
+          {/* Pin/unpin the top toolbar (keep visible on scroll, or hide for a cleaner view) */}
+          <button
+            onClick={() => setStickyTools(v => { const n = !v; try { localStorage.setItem('prodia_sticky_tools', String(n)); } catch { /* ignore */ } return n; })}
+            className={`p-1 rounded-md transition-colors shrink-0 ${stickyTools ? 'text-accent-400 bg-accent-500/10' : 'text-surface-400 hover:text-accent-400 hover:bg-surface-200'}`}
+            title={stickyTools ? t('create.unpinTools', 'Unpin toolbar (hide on scroll)') : t('create.pinTools', 'Keep toolbar visible on scroll')}
+          >
+            {stickyTools ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+          </button>
+
           {/* Download Confirmation Dialog */}
           {pendingDownload && (
             <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center" onClick={() => setPendingDownload(null)}>
@@ -880,9 +1326,26 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
             </div>
           )}
           <div className="flex-1" />
+          {/* Info panel toggle */}
+          <button
+            onClick={infoPanel.toggle}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${infoPanel.enabled ? 'text-accent-400 bg-accent-500/10' : 'text-surface-400 hover:text-accent-400 hover:bg-surface-200'}`}
+            title={t('create.toggleInfoPanel', 'Info panel — explains each parameter, its value and range')}
+          >
+            <Info className="w-3.5 h-3.5" />
+          </button>
+          {/* Reset to defaults */}
+          <button
+            onClick={handleResetParams}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-surface-400 hover:text-amber-400 hover:bg-surface-200 transition-colors"
+            title={t('create.resetParams', 'Restore default settings')}
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
           {/* Template save/load */}
-          <div className="relative" ref={templateMenuRef}>
+          <div className="relative">
             <button
+              ref={templateBtnRef}
               onClick={() => setShowTemplateMenu(!showTemplateMenu)}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-surface-400 hover:text-accent-400 hover:bg-surface-200 transition-colors"
               title={t('create.templates', 'Templates')}
@@ -891,7 +1354,7 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
               <span className="hidden sm:inline">{t('create.templates', 'Templates')}</span>
             </button>
             {showTemplateMenu && (
-              <div className="absolute right-0 top-full mt-1 w-56 bg-surface-100 border border-surface-300 rounded-xl shadow-2xl z-50 overflow-hidden">
+              <DropdownPortal anchorEl={templateBtnRef.current} width={224} align="right" onClose={() => setShowTemplateMenu(false)}>
                 <div className="px-3 py-2 border-b border-surface-300/40">
                   <div className="flex gap-1.5">
                     <input
@@ -936,7 +1399,7 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                     </div>
                   ))}
                 </div>
-              </div>
+              </DropdownPortal>
             )}
           </div>
         </div>
@@ -977,7 +1440,19 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
           </button>
         </div>
 
+        {/* Advanced master switch: turn OFF to force a clean text→music generation,
+            ignoring any reference/cover/source audio still loaded in the UI. */}
+        {params.customMode && (
+          <ToggleField
+            label={t('create.useAudioInput', 'Usar audio de entrada (cover / referencia)')}
+            value={!params.ignoreAudioInput}
+            onChange={v => set('ignoreAudioInput', !v)}
+            tooltip={t('tooltip.useAudioInput', 'Apágalo para forzar texto → música limpio, ignorando cualquier audio de referencia o cover cargado.')}
+          />
+        )}
+
         {/* Workflow mode presets */}
+        {!params.ignoreAudioInput && (
         <div className="flex gap-1.5">
           <button
             onClick={() => handleWorkflowMode('cover')}
@@ -1013,9 +1488,10 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
             {t('workflow.extend', 'Extend')}
           </button>
         </div>
+        )}
 
-        {/* Audio Sections — always visible in advanced mode */}
-        {params.customMode && (
+        {/* Audio Sections — hidden when the audio-input switch is off */}
+        {params.customMode && !params.ignoreAudioInput && (
           <AudioSections
             referenceAudioUrl={params.referenceAudioUrl}
             referenceAudioTitle={params.referenceAudioTitle}
@@ -1041,6 +1517,8 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
             taskType={params.taskType}
             audioCoverStrength={params.audioCoverStrength ?? 0.5}
             onAudioCoverStrengthChange={v => set('audioCoverStrength', v)}
+            referenceStrength={params.referenceStrength ?? 1.0}
+            onReferenceStrengthChange={v => set('referenceStrength', v)}
             repaintingStart={params.repaintingStart ?? 0}
             repaintingEnd={params.repaintingEnd ?? 1}
             onRepaintingChange={(s, e) => { set('repaintingStart', s); set('repaintingEnd', e); }}
@@ -1053,6 +1531,15 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
         {!params.customMode && (
           <div className="space-y-3">
             <div className="relative">
+              <SnippetMenu
+                title={t('create.savedPrompts', 'Saved prompts')}
+                snippets={snippets.prompts}
+                currentValue={params.songDescription || ''}
+                onSave={(n, v) => saveSnippet('prompts', n, v)}
+                onDelete={n => deleteSnippet('prompts', n)}
+                onApply={v => set('songDescription', v)}
+                className="absolute top-1 right-1 z-20"
+              />
               <textarea
                 value={params.songDescription || ''}
                 onChange={e => set('songDescription', e.target.value)}
@@ -1107,6 +1594,15 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                 className="w-full bg-surface-100 border border-surface-300 rounded-md px-2 py-1.5 text-sm text-surface-900 placeholder:text-surface-400"
               />
               <div className="relative">
+                <SnippetMenu
+                  title={t('create.savedStyles', 'Saved styles')}
+                  snippets={snippets.styles}
+                  currentValue={params.style || ''}
+                  onSave={(n, v) => saveSnippet('styles', n, v)}
+                  onDelete={n => deleteSnippet('styles', n)}
+                  onApply={v => set('style', v)}
+                  className="absolute top-1 right-1 z-20"
+                />
                 <textarea
                   value={params.style}
                   onChange={e => set('style', e.target.value)}
@@ -1138,6 +1634,16 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
               </div>
               {/* Lyrics with colored overlay */}
               <div className="relative" ref={lyricsContainerRef}>
+                {/* Saved lyrics */}
+                <SnippetMenu
+                  title={t('create.savedLyrics', 'Saved lyrics')}
+                  snippets={snippets.lyrics}
+                  currentValue={params.lyrics || ''}
+                  onSave={(n, v) => saveSnippet('lyrics', n, v)}
+                  onDelete={n => deleteSnippet('lyrics', n)}
+                  onApply={v => set('lyrics', v)}
+                  className="absolute top-1 right-7 z-20"
+                />
                 {/* Color toggle button */}
                 <button
                   onClick={() => setColoredLyrics(v => !v)}
@@ -1150,9 +1656,51 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                 >
                   <Palette className="w-3.5 h-3.5" />
                 </button>
+                {/* Section-tag autocomplete — appears while typing '[' */}
+                {tagQuery !== null && !params.instrumental && (() => {
+                  const q = tagQuery.trim().toLowerCase();
+                  const matches = SECTION_TAGS.filter(s => s.tag.slice(1).toLowerCase().startsWith(q));
+                  if (matches.length === 0) return null;
+                  return (
+                    <div className="absolute left-2 top-9 z-30 w-44 bg-surface-100 border border-surface-300 rounded-lg shadow-2xl overflow-hidden">
+                      <div className="px-2 py-1 text-[9px] uppercase tracking-wider text-surface-400 border-b border-surface-200">{t('create.sectionTags', 'Section tags')}</div>
+                      {matches.map(s => (
+                        <button
+                          key={s.tag}
+                          type="button"
+                          onMouseDown={ev => {
+                            ev.preventDefault();
+                            const ta = lyricsRef.current;
+                            if (!ta) return;
+                            const value = params.lyrics || '';
+                            const pos = ta.selectionStart;
+                            const beforeTxt = value.slice(0, pos).replace(/\[[a-zA-Z -]*$/, s.tag);
+                            const newValue = beforeTxt + value.slice(pos);
+                            set('lyrics', newValue);
+                            setTagQuery(null);
+                            requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = beforeTxt.length; ta.focus(); });
+                          }}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-surface-200 text-left transition-colors"
+                        >
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.hex }} />
+                          <span className={`font-mono ${s.color}`}>{s.tag}</span>
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
                 <textarea
                   value={params.lyrics}
-                  onChange={e => set('lyrics', e.target.value)}
+                  onChange={e => {
+                    const v = e.target.value;
+                    set('lyrics', v);
+                    // Section-tag autocomplete: detect an open '[' + partial word before the cursor.
+                    const before = v.slice(0, e.target.selectionStart);
+                    const m = before.match(/\[([a-zA-Z -]*)$/);
+                    setTagQuery(m ? m[1] : null);
+                  }}
+                  onKeyDown={e => { if (e.key === 'Escape') setTagQuery(null); }}
+                  onBlur={() => window.setTimeout(() => setTagQuery(null), 150)}
                   onScroll={e => {
                     if (overlayRef.current) {
                       overlayRef.current.scrollTop = (e.target as HTMLTextAreaElement).scrollTop;
@@ -1225,9 +1773,29 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
               title={t('create.sections.music')}
               isOpen={openSections.music}
               onToggle={() => toggleSection('music')}
-              badge={params.bpm ? `${params.bpm} BPM` : undefined}
+              badge={params.bpm ? `${params.bpm} BPM` : t('create.bpmAutoBadge', 'BPM Auto')}
             >
-              <SliderField label={t('create.bpm')} value={params.bpm} onChange={v => set('bpm', v)} min={30} max={300} tooltip={t('tooltip.bpm')} />
+              <div className="space-y-1">
+                <div className="flex items-end gap-2">
+                  <div className="flex-1 min-w-0">
+                    <SliderField label={t('create.bpm')} value={params.bpm === 0 ? (lastManualBpmRef.current || 120) : params.bpm} onChange={v => set('bpm', v)} min={30} max={300} disabled={params.bpm === 0} tooltip={t('tooltip.bpm')} />
+                  </div>
+                  <button
+                    onClick={toggleAutoBpm}
+                    className={`px-2 py-1 mb-0.5 rounded-md text-[10px] font-semibold border transition-colors shrink-0 ${
+                      params.bpm === 0
+                        ? 'bg-accent-500/15 border-accent-500/40 text-accent-400'
+                        : 'bg-surface-100 border-surface-300/40 text-surface-500 hover:border-accent-500/40 hover:text-accent-400'
+                    }`}
+                    title={t('create.bpmAutoTooltip', 'Auto: the model detects the tempo from the style and any reference/cover audio')}
+                  >
+                    {t('create.bpmAuto', 'Auto')}
+                  </button>
+                </div>
+                {params.bpm === 0 && (
+                  <p className="text-[10px] text-accent-400 ml-1">{t('create.bpmAutoHint', 'Auto: tempo detected from the style / reference audio')}</p>
+                )}
+              </div>
               <div className="space-y-1">
                 <SliderField label={t('create.duration')} value={params.duration} onChange={v => set('duration', v)} min={0} max={600} suffix={params.duration === 0 ? 'Auto' : t('create.seconds')} tooltip={t('tooltip.duration')} />
                 {params.duration === 0 && (
@@ -1385,6 +1953,11 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                 ) : (
                   <p className="text-xs text-surface-400">{t('lora.noLoaded', 'No LoRA loaded')}</p>
                 )}
+                {loraWarning && (
+                  <div className="px-2 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <span className="text-[10px] text-amber-400 leading-snug">{loraWarning}</span>
+                  </div>
+                )}
                 <button
                   onClick={() => setShowLoraManager(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium
@@ -1402,8 +1975,36 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
               isOpen={openSections.generation}
               onToggle={() => toggleSection('generation')}
             >
-              <SliderField label={t('create.steps')} value={params.inferenceSteps} onChange={v => set('inferenceSteps', v)} min={10} max={200} tooltip={t('tooltip.steps')} />
-              <SliderField label={t('create.guidance')} value={params.guidanceScale} onChange={v => set('guidanceScale', v)} min={1} max={30} step={0.5} tooltip={t('tooltip.guidance')} />
+              <SliderField
+                label={t('create.steps')}
+                value={timestepsCheck?.ok ? timestepsCheck.steps : params.inferenceSteps}
+                onChange={v => set('inferenceSteps', v)}
+                min={10}
+                max={200}
+                disabled={!!timestepsCheck?.ok}
+                tooltip={timestepsCheck?.ok
+                  ? t('tooltip.stepsOverridden', 'Overridden by Custom Timesteps: the schedule length defines the real step count.')
+                  : t('tooltip.steps')}
+              />
+              <div className="flex items-center gap-1">
+                <div className="flex-1 min-w-0">
+                  <SliderField label={t('create.guidance')} value={params.guidanceScale} onChange={v => set('guidanceScale', v)} min={1} max={30} step={0.5} tooltip={t('tooltip.guidance')} />
+                </div>
+                <button
+                  onClick={() => setPinGuidance(v => {
+                    const n = !v;
+                    try {
+                      localStorage.setItem('prodia_pin_guidance', String(n));
+                      if (!n) localStorage.removeItem('prodia_guidance_value');
+                    } catch { /* ignore */ }
+                    return n;
+                  })}
+                  className={`p-1 rounded-md transition-colors shrink-0 ${pinGuidance ? 'text-accent-400 bg-accent-500/10' : 'text-surface-400 hover:text-accent-400 hover:bg-surface-200'}`}
+                  title={pinGuidance ? t('create.unpinGuidance', 'Guidance value is remembered — click to use the default on next restart') : t('create.pinGuidance', 'Remember this guidance value next time you open the app')}
+                >
+                  {pinGuidance ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                </button>
+              </div>
               <SliderField label={t('create.batch')} value={params.batchSize} onChange={v => set('batchSize', v)} min={1} max={8} tooltip={t('tooltip.batch')} />
               <SliderField label={t('create.shift')} value={params.shift} onChange={v => set('shift', v)} min={0} max={10} step={0.5} tooltip={t('tooltip.shift')} />
               <div className="flex items-center gap-3">
@@ -1411,18 +2012,41 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                 <div className="flex-1 flex items-center gap-2">
                   <ToggleField label={t('create.randomSeed')} value={params.randomSeed} onChange={v => set('randomSeed', v)} />
                   {!params.randomSeed && (
-                    <input
-                      type="number"
-                      value={params.seed}
-                      onChange={e => set('seed', parseInt(e.target.value) || 0)}
-                      className="w-24 bg-surface-100 border border-surface-300 rounded px-2 py-1 text-xs text-surface-900"
-                    />
+                    <div className="flex items-center gap-1">
+                      {/* −/+ step the seed by 1 to explore manual variations of a good seed */}
+                      <button
+                        type="button"
+                        onClick={() => set('seed', Math.max(0, (Number(params.seed) || 0) - 1))}
+                        title={t('create.seedPrev', 'Variación anterior (−1)')}
+                        className="w-6 h-6 flex items-center justify-center rounded bg-surface-200 text-surface-500 hover:text-accent-400 hover:bg-surface-300 transition-colors shrink-0"
+                      >−</button>
+                      <input
+                        type="number"
+                        value={params.seed}
+                        onChange={e => set('seed', parseInt(e.target.value) || 0)}
+                        className="w-24 bg-surface-100 border border-surface-300 rounded px-2 py-1 text-xs text-surface-900 text-center tabular-nums"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => set('seed', (Number(params.seed) || 0) + 1)}
+                        title={t('create.seedNext', 'Siguiente variación (+1)')}
+                        className="w-6 h-6 flex items-center justify-center rounded bg-surface-200 text-surface-500 hover:text-accent-400 hover:bg-surface-300 transition-colors shrink-0"
+                      >+</button>
+                      <button
+                        type="button"
+                        onClick={() => set('seed', Math.floor(Math.random() * 4294967295) + 1)}
+                        title={t('create.seedRandom', 'Tirar una semilla aleatoria al campo')}
+                        className="w-6 h-6 flex items-center justify-center rounded bg-surface-200 text-surface-500 hover:text-accent-400 hover:bg-surface-300 transition-colors shrink-0"
+                      >
+                        <Dice5 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
               <ToggleField label={t('create.thinking')} value={params.thinking} onChange={v => set('thinking', v)} tooltip={t('tooltip.thinking')} />
               <div className="flex gap-3">
-                <SelectField label={t('create.format')} value={params.audioFormat} onChange={v => set('audioFormat', v as 'mp3' | 'flac')} options={[{ value: 'mp3', label: 'MP3' }, { value: 'flac', label: 'FLAC' }]} />
+                <SelectField label={t('create.format')} value={params.audioFormat} onChange={v => set('audioFormat', v as 'mp3' | 'flac' | 'wav')} options={[{ value: 'mp3', label: 'MP3' }, { value: 'wav', label: 'WAV' }, { value: 'flac', label: 'FLAC' }]} />
                 <SelectField label={t('create.method')} value={params.inferMethod} onChange={v => set('inferMethod', v as 'ode' | 'sde')} options={[{ value: 'ode', label: 'ODE' }, { value: 'sde', label: 'SDE' }]} />
               </div>
             </CollapsibleSection>
@@ -1444,7 +2068,8 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                       <button
                         key={s.value}
                         disabled={lmSwapping}
-                        onClick={() => handleSwapLm(s.value, params.lmBackend || 'pt')}
+                        onClick={() => handleSwapLm(s.value, params.lmBackend || 'pt', !!isActive)}
+                        title={isActive ? t('create.lmUnloadHint', 'Loaded — click to unload from memory') : `${s.label} · ${s.vram}`}
                         className={`flex-1 flex flex-col items-center gap-0.5 px-2 py-1.5 rounded-lg text-xs font-medium border transition-all ${
                           isActive
                             ? 'bg-accent-500/15 border-accent-500/40 text-accent-400'
@@ -1493,6 +2118,8 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
               <SliderField label={t('create.cfgScale')} value={params.lmCfgScale} onChange={v => set('lmCfgScale', v)} min={0} max={5} step={0.1} tooltip={t('tooltip.lmCfgScale')} />
               <SliderField label={t('create.topK')} value={params.lmTopK} onChange={v => set('lmTopK', v)} min={1} max={500} tooltip={t('tooltip.topK')} />
               <SliderField label={t('create.topP')} value={params.lmTopP} onChange={v => set('lmTopP', v)} min={0} max={1} step={0.01} tooltip={t('tooltip.topP')} />
+              <SliderField label={t('create.repetitionPenalty', 'Repetition Penalty')} value={params.lmRepetitionPenalty ?? 1.2} onChange={v => set('lmRepetitionPenalty', v)} min={1} max={2} step={0.05} tooltip={t('tooltip.repetitionPenalty', 'Higher = less repetition of words/sounds. Raise to 1.3-1.5 if it repeats a word until it breaks.')} />
+              <SliderField label={t('create.noRepeatNgram', 'No-Repeat N-gram')} value={params.noRepeatNgramSize ?? 0} onChange={v => set('noRepeatNgramSize', v)} min={0} max={8} step={1} tooltip={t('tooltip.noRepeatNgram', 'Blocks repeating the same group of N tokens (0 = off). Try 2-3 to stop stuck repetitions.')} />
               <div className="flex items-center gap-3">
                 <label className="text-xs text-surface-500 w-24">{t('create.negativePrompt')}</label>
                 <input
@@ -1502,6 +2129,197 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
                   className="flex-1 bg-surface-100 border border-surface-300 rounded px-2 py-1 text-xs text-surface-900"
                   placeholder="e.g. noise, distortion..."
                 />
+              </div>
+            </CollapsibleSection>
+
+            {/* Experimental Lab — individually toggleable, genuinely model-interpreted controls */}
+            <CollapsibleSection
+              title={t('create.sections.experimental', 'Experimental Lab')}
+              isOpen={openSections.experimental}
+              onToggle={() => toggleSection('experimental')}
+              badge={(params.captionBoosters?.length || 0) > 0 ? `${params.captionBoosters!.length} ✦` : undefined}
+            >
+              {/* Generation pipeline mode */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-surface-500 font-medium">{t('create.genMode', 'Generation Mode')}</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {GENERATION_MODES.map(m => {
+                    const active = generationMode === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={() => setParams(p => ({ ...p, ...m.apply }))}
+                        title={t(`create.genMode_${m.id}Desc`, m.desc)}
+                        className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                          active
+                            ? 'bg-accent-500/15 border-accent-500/40 text-accent-400'
+                            : 'bg-surface-100 border-surface-300/40 text-surface-500 hover:border-accent-500/30 hover:text-surface-700'
+                        }`}
+                      >
+                        {t(`create.genMode_${m.id}`, m.label)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-surface-400">
+                  {t(`create.genMode_${generationMode}Desc`, GENERATION_MODES.find(m => m.id === generationMode)!.desc)}
+                </p>
+              </div>
+
+              {/* Consistency macro — one slider driving the LM sampling + DiT guidance knobs */}
+              <div className="space-y-1">
+                <SliderField
+                  label={t('create.consistency', 'Consistency')}
+                  value={consistency}
+                  onChange={applyConsistency}
+                  min={0}
+                  max={100}
+                  step={5}
+                  suffix={consistency <= 25 ? t('create.consistencyWild', 'Wild') : consistency >= 75 ? t('create.consistencyLocked', 'Locked') : t('create.consistencyBalanced', 'Balanced')}
+                  tooltip={t('tooltip.consistency', 'Macro control. Left = exploratory (hot LM sampling, loose guidance, motifs may wander). Right = locked (cold sampling, n-gram loop blocking, tight guidance — melodies stay on-key and on-theme). Moving it overwrites LM Temperature/Top-P/Top-K/Repetition/N-gram/CFG and DiT Guidance.')}
+                />
+                <p className="text-[10px] text-surface-400">{t('create.consistencyHint', 'Sets 7 knobs the model really reads (LM sampling + DiT guidance). Fine-tune them afterwards in the LM / Generation sections.')}</p>
+              </div>
+
+              {/* Caption boosters — toggleable tag packs conditioned by the LM */}
+              <div className="space-y-1.5">
+                <label className="text-xs text-surface-500 font-medium">{t('create.boostersLabel', 'Caption Boosters')}</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {CAPTION_BOOSTERS.map(b => {
+                    const active = (params.captionBoosters || []).includes(b.id);
+                    return (
+                      <button
+                        key={b.id}
+                        onClick={() => toggleBooster(b.id)}
+                        title={b.tags}
+                        className={`px-2 py-1 rounded-md text-[11px] font-medium border transition-colors ${
+                          active
+                            ? 'bg-accent-500/15 border-accent-500/40 text-accent-400'
+                            : 'bg-surface-100 border-surface-300/40 text-surface-500 hover:border-accent-500/30 hover:text-surface-700'
+                        }`}
+                      >
+                        {b.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-surface-400">{t('create.boostersHint', 'Each chip appends caption vocabulary the model was trained on. Toggle individually to A/B test production, era and mix character.')}</p>
+              </div>
+
+              {/* Chain-of-Thought controls — only interpreted when Thinking is ON */}
+              <div className={`space-y-2 ${params.thinking ? '' : 'opacity-50 pointer-events-none'}`}>
+                <ToggleField
+                  label={t('create.cotMetas', 'CoT Metas (auto BPM/key/duration)')}
+                  value={params.useCotMetas ?? true}
+                  onChange={v => set('useCotMetas', v)}
+                  tooltip={t('tooltip.cotMetas', 'ON: the LM infers BPM, key and structure itself. OFF: your manual values dominate — better consistency between takes.')}
+                />
+                <ToggleField
+                  label={t('create.cotCaption', 'Caption Rewrite')}
+                  value={params.useCotCaption ?? true}
+                  onChange={v => set('useCotCaption', v)}
+                  tooltip={t('tooltip.cotCaption', 'ON: the LM rewrites/enriches your style text (more variety). OFF: your exact caption is used — maximum reproducibility.')}
+                />
+                <ToggleField
+                  label={t('create.cotLanguage', 'CoT Language Detection')}
+                  value={params.useCotLanguage ?? true}
+                  onChange={v => set('useCotLanguage', v)}
+                  tooltip={t('tooltip.cotLanguage', 'ON: the LM infers the vocal language. OFF: rely on your Vocal Language setting only.')}
+                />
+              </div>
+              {!params.thinking && (
+                <p className="text-[10px] text-amber-500/80">{t('create.cotNeedsThinking', 'CoT toggles require "Thinking" (Generation Settings) to be ON.')}</p>
+              )}
+
+              <ToggleField
+                label={t('create.parallelThinking', 'Parallel Thinking (LM batch)')}
+                value={params.allowLmBatch ?? true}
+                onChange={v => set('allowLmBatch', v)}
+                tooltip={t('tooltip.parallelThinking', 'Batches LM decoding for multi-variation generations. Turn OFF to isolate variations completely when experimenting.')}
+              />
+
+              {/* LM instruction override */}
+              <div className="space-y-1">
+                <label className="text-xs text-surface-500 font-medium">{t('create.instructionOverride', 'LM Instruction Override')}</label>
+                <input
+                  type="text"
+                  value={params.instruction || ''}
+                  onChange={e => set('instruction', e.target.value || undefined)}
+                  className="w-full bg-surface-100 border border-surface-300 rounded px-2 py-1 text-xs text-surface-900"
+                  placeholder={t('create.instructionPlaceholder', '(default) Fill the audio semantic mask with the style described in the text prompt.')}
+                />
+                <p className="text-[10px] text-surface-400">{t('create.instructionHint', 'The task instruction the LM reads before composing. Leave empty for the default. Powerful for steering global behavior.')}</p>
+              </div>
+
+              {/* Custom sampling timesteps */}
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs text-surface-500 font-medium">{t('create.customTimesteps', 'Custom Timesteps (DiT)')}</label>
+                  {timestepsCheck?.ok && (
+                    <span className="text-[10px] text-green-500">{t('create.timestepsSteps', '{{n}} steps', { n: timestepsCheck.steps })}</span>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-1">
+                  {TIMESTEP_SHAPES.map(s => {
+                    const active = !!timestepsCheck?.ok && tsShape === s.id;
+                    return (
+                      <button
+                        key={s.id}
+                        onClick={() => applyTimestepShape(s.id, tsSteps)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
+                          active
+                            ? 'bg-accent-500/15 border-accent-500/40 text-accent-400'
+                            : 'bg-surface-100 border-surface-300/40 text-surface-500 hover:border-accent-500/30'
+                        }`}
+                      >
+                        {t(`create.tsShape_${s.id}`, s.label)}
+                      </button>
+                    );
+                  })}
+                  <span className="text-[10px] text-surface-400 ml-1">×</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={tsSteps}
+                    onChange={e => setTsSteps(Math.max(1, Math.min(300, Number(e.target.value) || 1)))}
+                    onBlur={() => { if (timestepsCheck?.ok) applyTimestepShape(tsShape, tsSteps); }}
+                    className="w-14 bg-surface-100 border border-surface-300 rounded px-1.5 py-0.5 text-[10px] text-surface-900 font-mono"
+                    title={t('create.tsStepsTitle', 'Number of steps for the generated schedule')}
+                  />
+                  <span className="text-[10px] text-surface-400">{t('create.tsStepsUnit', 'steps')}</span>
+                  {params.customTimesteps && (
+                    <button
+                      onClick={() => set('customTimesteps', undefined)}
+                      className="ml-auto px-1.5 py-0.5 rounded text-[10px] text-surface-500 hover:text-red-400 transition-colors"
+                    >
+                      {t('create.tsClear', 'Clear')}
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={params.customTimesteps || ''}
+                  onChange={e => set('customTimesteps', e.target.value || undefined)}
+                  className={`w-full bg-surface-100 border rounded px-2 py-1 text-xs text-surface-900 font-mono ${
+                    timestepsCheck && !timestepsCheck.ok ? 'border-red-500/70' : 'border-surface-300'
+                  }`}
+                  placeholder="e.g. 1.0, 0.76, 0.5, 0.28, 0"
+                />
+                {timestepsCheck && !timestepsCheck.ok && (
+                  <p className="text-[10px] text-red-400">
+                    {timestepsCheck.error === 'range' && t('create.tsErrRange', 'Values must be within 0.0–1.0 — the backend will DROP the whole list and use the auto schedule.')}
+                    {timestepsCheck.error === 'order' && t('create.tsErrOrder', 'Values must be strictly descending (1.0 → 0). A rising step pushes the latent backwards and corrupts the audio.')}
+                    {timestepsCheck.error === 'format' && t('create.tsErrFormat', 'Only comma-separated numbers are allowed.')}
+                  </p>
+                )}
+                {timestepsCheck?.ok && params.inferMethod === 'sde' && (
+                  <p className="text-[10px] text-amber-500/80">{t('create.tsSdeWarn', 'SDE ignores custom values (only the step count is used). Switch to ODE for the schedule to take effect.')}</p>
+                )}
+                {timestepsCheck?.ok && timestepsUnsupported && (
+                  <p className="text-[10px] text-amber-500/80">{t('create.tsBaseWarn', 'The non-XL Base checkpoint ignores custom timesteps entirely. Use SFT, Turbo or any XL model.')}</p>
+                )}
+                <p className="text-[10px] text-surface-400">{t('create.customTimestepsHint', 'Redistributes WHERE your steps are spent — it does not add quality by itself. Big effect at 8-20 steps (Turbo); at 50-100 the grid is already dense so gains are subtle. Structure = pack steps near noise (form, rhythm); Detail = near the end (texture, air). Empty = auto.')}</p>
               </div>
             </CollapsibleSection>
 
@@ -1525,6 +2343,7 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
 
       {/* Generate button - sticky at bottom */}
       <div className="px-4 py-3 border-t border-surface-300/60 bg-surface-50 space-y-2">
+        <InfoPanel />
         <GpuMiniBar
           isGenerating={isGenerating}
           progress={generationProgress}
@@ -1548,6 +2367,24 @@ export default memo(function CreatePanel({ onGenerate, isGenerating, activeJobCo
           }}
           onChange={(key, value) => set(key as keyof typeof params, value as any)}
         />
+        {/* Active style-reference chip — visible whenever a reference song is set,
+            so it's obvious and easy to remove (the Reference tab lives inside Audio). */}
+        {params.referenceAudioUrl && (
+          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-accent-500/10 border border-accent-500/30">
+            <Disc3 className="w-4 h-4 text-accent-400 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] text-surface-400 leading-none">{t('audio.referenceActive', 'Style reference')}</div>
+              <div className="text-xs font-medium text-accent-300 truncate">{params.referenceAudioTitle || t('audio.reference', 'Reference')}</div>
+            </div>
+            <button
+              onClick={() => { set('referenceAudioUrl', undefined); set('referenceAudioTitle', undefined); }}
+              className="p-1 rounded text-surface-400 hover:text-red-400 hover:bg-red-500/10 transition-colors shrink-0"
+              title={t('audio.removeReference', 'Remove reference')}
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
         <button
           onClick={handleGenerate}
           disabled={isGenerating && activeJobCount >= 4}

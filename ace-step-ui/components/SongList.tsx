@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { Song } from '../types';
-import { Play, MoreHorizontal, Heart, ThumbsDown, ListPlus, Pause, Search, Filter, Check, Globe, Lock, Loader2, ThumbsUp, Share2, Video, Info, Clock, X } from 'lucide-react';
+import { Play, MoreHorizontal, Heart, ThumbsDown, ListPlus, Pause, Search, Filter, Check, Globe, Lock, Loader2, ThumbsUp, Share2, Video, Info, Clock, X, Calendar } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useI18n } from '../context/I18nContext';
 import { SongDropdownMenu } from './SongDropdownMenu';
@@ -49,6 +49,9 @@ const getModelDisplayName = (modelId?: string): string => {
     if (!modelId) return 'v1.5';
     
     const mapping: Record<string, string> = {
+        'acestep-v15-xl-base': '1.5XL Base',
+        'acestep-v15-xl-sft': '1.5XL SFT',
+        'acestep-v15-xl-turbo': '1.5XL Turbo',
         'acestep-v15-base': '1.5B',
         'acestep-v15-sft': '1.5S',
         'acestep-v15-turbo-shift1': '1.5TS1',
@@ -57,6 +60,24 @@ const getModelDisplayName = (modelId?: string): string => {
         'acestep-v15-turbo': '1.5T',
     };
     return mapping[modelId] || 'v1.5';
+};
+
+// Map model ID to long variant label (Base / XL Base / Turbo / XL Turbo / SFT / XL SFT, etc.)
+const getModelVariantLabel = (modelId?: string): string => {
+    if (!modelId) return '';
+    const id = modelId.toLowerCase();
+    const isXL = /(^|-)xl(-|$)/.test(id) || id.includes('-xl-');
+    let variant = '';
+    if (id.includes('turbo')) variant = 'Turbo';
+    else if (id.includes('sft')) variant = 'SFT';
+    else if (id.includes('base')) variant = 'Base';
+    let suffix = '';
+    if (id.includes('continuous')) suffix = ' Continuous';
+    else if (id.includes('shift1')) suffix = ' Shift1';
+    else if (id.includes('shift2')) suffix = ' Shift2';
+    else if (id.includes('shift3')) suffix = ' Shift3';
+    if (!variant) return modelId;
+    return `${isXL ? 'XL ' : ''}${variant}${suffix}`;
 };
 
 const createDragPreview = (element: HTMLElement) => {
@@ -124,12 +145,16 @@ export const SongList: React.FC<SongListProps> = ({
     const [searchQuery, setSearchQuery] = useState('');   // debounced value for filtering
     const [activeFilters, setActiveFilters] = useState<Set<FilterType>>(new Set());
     const [isFilterOpen, setIsFilterOpen] = useState(false);
+    const [dateFrom, setDateFrom] = useState('');   // datetime-local value: YYYY-MM-DDTHH:mm
+    const [dateTo, setDateTo] = useState('');       // datetime-local value: YYYY-MM-DDTHH:mm
+    const [isDateOpen, setIsDateOpen] = useState(false);
     const [isSelecting, setIsSelecting] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [configSong, setConfigSong] = useState<Song | null>(null);
     const [visibleCount, setVisibleCount] = useState(15);
     const sentinelRef = useRef<HTMLDivElement>(null);
     const filterRef = useRef<HTMLDivElement>(null);
+    const dateRef = useRef<HTMLDivElement>(null);
 
     const FILTERS: { id: FilterType; label: string; icon: React.ReactNode }[] = [
         { id: 'liked', label: t('liked'), icon: <ThumbsUp size={16} /> },
@@ -150,6 +175,9 @@ export const SongList: React.FC<SongListProps> = ({
         const handleClickOutside = (event: MouseEvent) => {
             if (filterRef.current && !filterRef.current.contains(event.target as Node)) {
                 setIsFilterOpen(false);
+            }
+            if (dateRef.current && !dateRef.current.contains(event.target as Node)) {
+                setIsDateOpen(false);
             }
         };
         document.addEventListener('mousedown', handleClickOutside);
@@ -181,6 +209,8 @@ export const SongList: React.FC<SongListProps> = ({
     };
 
     const filteredSongs = useMemo(() => {
+        const fromTs = dateFrom ? new Date(dateFrom).getTime() : null;
+        const toTs = dateTo ? new Date(dateTo).getTime() : null;
         return songs.filter(song => {
             // 1. Search Logic
             const q = searchQuery.toLowerCase();
@@ -192,7 +222,15 @@ export const SongList: React.FC<SongListProps> = ({
 
             if (!matchesSearch) return false;
 
-            // 2. Filter Logic
+            // 2. Date range logic
+            if (fromTs !== null || toTs !== null) {
+                const createdTs = song.createdAt ? new Date(song.createdAt).getTime() : NaN;
+                if (Number.isNaN(createdTs)) return false;
+                if (fromTs !== null && createdTs < fromTs) return false;
+                if (toTs !== null && createdTs > toTs) return false;
+            }
+
+            // 3. Filter Logic
             if (activeFilters.size === 0) return true;
 
             if (activeFilters.has('liked') && !likedSongIds.has(song.id)) return false;
@@ -202,7 +240,7 @@ export const SongList: React.FC<SongListProps> = ({
 
             return true;
         });
-    }, [songs, searchQuery, activeFilters, likedSongIds]);
+    }, [songs, searchQuery, activeFilters, likedSongIds, dateFrom, dateTo]);
 
     const filteredUploads = useMemo(() => {
         if (activeFilters.size > 0) return [];
@@ -232,7 +270,7 @@ export const SongList: React.FC<SongListProps> = ({
     // Reset visible count when filters/search change
     useEffect(() => {
         setVisibleCount(15);
-    }, [searchQuery, activeFilters]);
+    }, [searchQuery, activeFilters, dateFrom, dateTo]);
 
     const visibleItems = useMemo(() => listItems.slice(0, visibleCount), [listItems, visibleCount]);
     const hasMore = visibleCount < listItems.length;
@@ -294,6 +332,79 @@ export const SongList: React.FC<SongListProps> = ({
                                 >
                                     <X size={14} />
                                 </button>
+                            )}
+                        </div>
+
+                        <div className="relative" ref={dateRef}>
+                            <button
+                                onClick={() => setIsDateOpen(!isDateOpen)}
+                                className={`
+                        border text-xs font-bold px-4 py-2.5 rounded-lg flex items-center gap-2 transition-colors duration-150 select-none
+                        ${isDateOpen || dateFrom || dateTo
+                                        ? 'bg-zinc-900 dark:bg-white text-white dark:text-black border-transparent'
+                                        : 'bg-zinc-100 dark:bg-[#121214] hover:bg-zinc-200 dark:hover:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-700 dark:text-white'
+                                    }
+                    `}
+                                title={dateFrom || dateTo ? `${dateFrom || '…'} → ${dateTo || '…'}` : 'Filter by date and time'}
+                            >
+                                <Calendar size={14} />
+                                <span>Date{(dateFrom || dateTo) ? ' ●' : ''}</span>
+                            </button>
+
+                            {isDateOpen && (
+                                <div className="absolute right-0 top-full mt-2 w-72 bg-white dark:bg-[#18181b] border border-zinc-200 dark:border-white/10 rounded-xl shadow-2xl overflow-hidden py-3 px-4 z-50 animate-in fade-in zoom-in-95 duration-100 origin-top-right">
+                                    <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-2">
+                                        Date & time range
+                                    </div>
+                                    <label className="block text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 mb-1">From</label>
+                                    <input
+                                        type="datetime-local"
+                                        value={dateFrom}
+                                        onChange={(e) => setDateFrom(e.target.value)}
+                                        className="w-full mb-3 bg-zinc-100 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-md px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                                    />
+                                    <label className="block text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 mb-1">To</label>
+                                    <input
+                                        type="datetime-local"
+                                        value={dateTo}
+                                        onChange={(e) => setDateTo(e.target.value)}
+                                        className="w-full mb-3 bg-zinc-100 dark:bg-[#121214] border border-zinc-200 dark:border-white/10 rounded-md px-2 py-1.5 text-xs text-zinc-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                                    />
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => {
+                                                const now = new Date();
+                                                const pad = (n: number) => String(n).padStart(2, '0');
+                                                const ymd = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+                                                setDateFrom(`${ymd}T00:00`);
+                                                setDateTo(`${ymd}T23:59`);
+                                            }}
+                                            className="px-2 py-1 rounded-md text-[10px] font-semibold border border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-violet-400"
+                                        >
+                                            Today
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                const now = new Date();
+                                                const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+                                                const pad = (n: number) => String(n).padStart(2, '0');
+                                                const fmt = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                                                setDateFrom(fmt(start));
+                                                setDateTo(fmt(now));
+                                            }}
+                                            className="px-2 py-1 rounded-md text-[10px] font-semibold border border-zinc-200 dark:border-white/10 text-zinc-600 dark:text-zinc-300 hover:border-violet-400"
+                                        >
+                                            Last 7d
+                                        </button>
+                                        <button
+                                            onClick={() => { setDateFrom(''); setDateTo(''); }}
+                                            className="ml-auto px-2 py-1 rounded-md text-[10px] font-semibold border border-red-300 dark:border-red-500/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10"
+                                            disabled={!dateFrom && !dateTo}
+                                        >
+                                            Clear
+                                        </button>
+                                    </div>
+                                </div>
                             )}
                         </div>
 
@@ -406,7 +517,7 @@ export const SongList: React.FC<SongListProps> = ({
                             </div>
                             <p className="font-medium">{t('noSongsMatchFilters')}</p>
                             <button
-                                onClick={() => { setActiveFilters(new Set()); setSearchInput(''); setSearchQuery(''); }}
+                                onClick={() => { setActiveFilters(new Set()); setSearchInput(''); setSearchQuery(''); setDateFrom(''); setDateTo(''); }}
                                 className="text-violet-600 dark:text-violet-500 text-sm font-bold hover:underline"
                             >
                                 {t('clearFilters')}
@@ -704,7 +815,7 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
                         {/* Cancel button */}
                         {onCancelJob && (
                             <button
-                                onClick={(e) => { e.stopPropagation(); onCancelJob(song); }}
+                                onClick={(e) => { e.stopPropagation(); onCancelJob(); }}
                                 className="absolute top-1 right-1 w-5 h-5 rounded-full bg-red-500/80 hover:bg-red-600 flex items-center justify-center transition-colors opacity-0 group-hover/image:opacity-100"
                                 title="Cancel generation"
                             >
@@ -770,6 +881,31 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
                                 })()}
                             </span>
                         )}
+                        {(() => {
+                            // Extract LoRA "version" (checkpoint folder / final_lora / step-N / epoch-N / vN)
+                            const path = song.generationParams?.loraPath || '';
+                            if (!path) return null;
+                            const parts = path.split(/[/\\]/).filter(Boolean);
+                            const leaf = parts[parts.length - 1] || '';
+                            const parent = parts[parts.length - 2] || '';
+                            const candidates = [leaf, parent];
+                            const versionRegex = /^(final(_lora|_model)?|checkpoint[-_]?\d+|step[-_]?\d+|epoch[-_]?\d+|v\d+(\.\d+)?|ckpt[-_]?\d+)$/i;
+                            const found = candidates.find(c => versionRegex.test(c));
+                            if (!found) return null;
+                            // Friendly short label
+                            let label = found;
+                            const m = found.match(/^(checkpoint|step|epoch|ckpt)[-_]?(\d+)$/i);
+                            if (m) label = `${m[1].toLowerCase()}-${m[2]}`;
+                            else if (/^final/i.test(found)) label = 'final';
+                            return (
+                                <span
+                                    className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded ring-1 ring-emerald-500/20"
+                                    title={`LoRA version: ${found} (${path})`}
+                                >
+                                    {label}
+                                </span>
+                            );
+                        })()}
                         {(song.generationParams?.actualSeed !== undefined || (song.generationParams?.seed !== undefined && song.generationParams?.seed >= 0)) && (
                             <span
                                 className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 cursor-pointer hover:text-zinc-600 dark:hover:text-zinc-300 transition-colors"
@@ -781,6 +917,39 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
                                 }}
                             >
                                 seed: {song.generationParams.actualSeed ?? song.generationParams.seed}
+                            </span>
+                        )}
+                        {(() => {
+                            const variant = getModelVariantLabel(song.ditModel);
+                            if (!variant) return null;
+                            const isTurbo = /turbo/i.test(song.ditModel || '');
+                            const steps = (song.generationParams as any)?.inferenceSteps;
+                            const overSteps = isTurbo && typeof steps === 'number' && steps > 16;
+                            return (
+                                <span
+                                    className={`text-[10px] font-extrabold uppercase tracking-wide text-white px-1.5 py-0.5 rounded ring-1 shadow-sm ${overSteps ? 'bg-red-700 ring-yellow-300/60 animate-pulse' : 'bg-red-600 ring-red-400/40'}`}
+                                    title={overSteps
+                                        ? `⚠ Turbo se entrenó para 8 pasos, esta canción usa ${steps}. Puede sonar peor que con 8. Modelo: ${variant} (${song.ditModel || 'unknown'})`
+                                        : `Model variant: ${variant} (${song.ditModel || 'unknown'})`}
+                                >
+                                    {overSteps ? `⚠ ${variant}` : variant}
+                                </span>
+                            );
+                        })()}
+                        {song.generationParams?.inferMethod && (
+                            <span
+                                className="text-[10px] font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300 bg-emerald-500/15 px-1.5 py-0.5 rounded ring-1 ring-emerald-500/30"
+                                title={`Inference method: ${song.generationParams.inferMethod}`}
+                            >
+                                {String(song.generationParams.inferMethod).toUpperCase()}
+                            </span>
+                        )}
+                        {song.generationParams?.lmBackend && (
+                            <span
+                                className="text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded ring-1 ring-amber-500/30"
+                                title={`LM backend: ${song.generationParams.lmBackend}`}
+                            >
+                                {String(song.generationParams.lmBackend).toLowerCase() === 'vllm' ? 'vLLM' : String(song.generationParams.lmBackend).toUpperCase()}
                             </span>
                         )}
                         {song.isPublic === false && (
@@ -893,10 +1062,10 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
                                 isOpen={showDropdown}
                                 onClose={() => setShowDropdown(false)}
                                 isOwner={isOwner}
-                                onCreateVideo={() => onOpenVideo?.(song)}
-                                onReusePrompt={onReusePrompt ? () => onReusePrompt?.(song) : undefined}
-                                onAddToPlaylist={() => onAddToPlaylist?.(song)}
-                                onDelete={() => onDelete?.(song)}
+                                onCreateVideo={() => onOpenVideo?.()}
+                                onReusePrompt={onReusePrompt ? () => onReusePrompt?.() : undefined}
+                                onAddToPlaylist={() => onAddToPlaylist?.()}
+                                onDelete={() => onDelete?.()}
                                 onShare={() => setShareModalOpen(true)}
                                 onUseAsReference={() => onUseAsReference?.()}
                                 onCoverSong={() => onCoverSong?.()}
@@ -910,12 +1079,41 @@ const SongItem: React.FC<SongItemProps> = React.memo(({
             </div>
 
             {/* Timestamp */}
-            <div className="text-xs font-mono text-zinc-500 dark:text-zinc-600 self-start pt-1">
-                {song.isGenerating ? (
-                    <span className={song.queuePosition ? 'text-amber-500' : 'text-violet-500'}>
-                        {song.queuePosition ? `#${song.queuePosition}` : 'Creating...'}
-                    </span>
-                ) : song.duration}
+            <div className="flex flex-col items-end gap-0.5 self-start pt-1">
+                <div className="text-xs font-mono text-zinc-500 dark:text-zinc-600">
+                    {song.isGenerating ? (
+                        <span className={song.queuePosition ? 'text-amber-500' : 'text-violet-500'}>
+                            {song.queuePosition ? `#${song.queuePosition}` : 'Creating...'}
+                        </span>
+                    ) : (() => {
+                        const d = song.duration as unknown;
+                        if (d === null || d === undefined || d === '') return '';
+                        // Already formatted (e.g. "2:00")
+                        if (typeof d === 'string' && /:\d{2}/.test(d)) return d;
+                        const secs = typeof d === 'number' ? d : parseFloat(String(d));
+                        if (!isFinite(secs) || secs < 0) return String(d);
+                        const m = Math.floor(secs / 60);
+                        const s = Math.floor(secs % 60);
+                        return `${m}:${String(s).padStart(2, '0')}`;
+                    })()}
+                </div>
+                {song.createdAt && (() => {
+                    const d = new Date(song.createdAt);
+                    if (Number.isNaN(d.getTime())) return null;
+                    const pad = (n: number) => String(n).padStart(2, '0');
+                    const dateStr = `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+                    const timeStr = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    return (
+                        <div
+                            className="flex items-center gap-1 text-[10px] font-mono text-zinc-800 dark:text-white/95"
+                            title={`Created: ${d.toLocaleString()}`}
+                        >
+                            <Clock size={10} className="opacity-80" />
+                            <span>{dateStr}</span>
+                            <span className="opacity-80">{timeStr}</span>
+                        </div>
+                    );
+                })()}
             </div>
         </div>
 

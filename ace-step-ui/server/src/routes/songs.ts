@@ -108,12 +108,14 @@ router.get('/', authMiddleware, async (req: AuthenticatedRequest, res: Response)
       `SELECT s.id, s.title, s.lyrics, s.style, s.caption, s.cover_url, s.audio_url,
               s.duration, s.bpm, s.key_scale, s.time_signature, s.tags, s.is_public, 
               s.like_count, s.view_count, s.user_id, s.created_at, s.generation_params,
-              COALESCE(u.username, 'Anonymous') as creator
+              COALESCE(u.username, 'Anonymous') as creator,
+              CASE WHEN ls.song_id IS NOT NULL THEN 1 ELSE 0 END as liked
        FROM songs s
        LEFT JOIN users u ON s.user_id = u.id
-       WHERE s.user_id = $1
+       LEFT JOIN liked_songs ls ON ls.song_id = s.id AND ls.user_id = $1
+       WHERE s.user_id = $2
        ORDER BY s.created_at DESC`,
-      [req.user!.id]
+      [req.user!.id, req.user!.id]
     );
 
     const songs = await Promise.all(
@@ -213,11 +215,13 @@ router.get('/:id', optionalAuthMiddleware, async (req: AuthenticatedRequest, res
     const result = await pool.query(
       `SELECT s.id, s.user_id, s.title, s.lyrics, s.style, s.caption, s.cover_url, s.audio_url,
               s.duration, s.bpm, s.key_scale, s.time_signature, s.tags, s.is_public, s.like_count, s.view_count, s.created_at,
-              COALESCE(u.username, 'Anonymous') as creator, u.avatar_url as creator_avatar, s.generation_params
+              COALESCE(u.username, 'Anonymous') as creator, u.avatar_url as creator_avatar, s.generation_params,
+              CASE WHEN ls.song_id IS NOT NULL THEN 1 ELSE 0 END as liked
        FROM songs s
        LEFT JOIN users u ON s.user_id = u.id
-       WHERE s.id = $1`,
-      [req.params.id]
+       LEFT JOIN liked_songs ls ON ls.song_id = s.id AND ls.user_id = $1
+       WHERE s.id = $2`,
+      [req.user?.id ?? '', req.params.id]
     );
 
     if (result.rows.length === 0) {

@@ -18,7 +18,7 @@ const __dirname = path.dirname(__filename);
 
 import authRoutes from './routes/auth.js';
 import songsRoutes from './routes/songs.js';
-import generateRoutes from './routes/generate.js';
+import generateRoutes, { applyStartupModel } from './routes/generate.js';
 import usersRoutes from './routes/users.js';
 import playlistsRoutes from './routes/playlists.js';
 import contactRoutes from './routes/contact.js';
@@ -27,6 +27,7 @@ import loraRoutes from './routes/lora.js';
 import trainingRoutes from './routes/training.js';
 import voicesRoutes from './routes/voices.js';
 import vramRoutes from './routes/vram.js';
+import preferencesRoutes from './routes/preferences.js';
 import { pool } from './db/pool.js';
 import './db/migrate.js';
 
@@ -446,6 +447,7 @@ app.use('/api/lora', loraRoutes);
 app.use('/api/training', trainingRoutes);
 app.use('/api/voices', voicesRoutes);
 app.use('/api/vram', vramRoutes);
+app.use('/api/preferences', preferencesRoutes);
 
 // Error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -469,6 +471,9 @@ app.listen(config.port, '0.0.0.0', () => {
   console.log(`ACE-Step UI Server running on http://localhost:${config.port}`);
   console.log(`Environment: ${config.nodeEnv}`);
   console.log(`ACE-Step API: ${config.acestep.apiUrl}`);
+
+  // Auto-load the user's preferred DiT model once the Gradio API is up (fire-and-forget)
+  applyStartupModel().catch(err => console.warn('[startup-model] error:', err?.message || err));
 
   // Show LAN access info
   import('os').then(os => {

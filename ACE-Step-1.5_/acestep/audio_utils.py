@@ -32,6 +32,37 @@ class AudioSaver:
         if self.default_format not in ["flac", "wav", "mp3"]:
             logger.warning(f"Unsupported format {default_format}, using 'flac'")
             self.default_format = "flac"
+
+    @staticmethod
+    def normalize_loudness(
+        audio: Union[torch.Tensor, np.ndarray],
+        target_rms_dbfs: float = -16.0,
+        peak_ceiling_dbfs: float = -1.0,
+    ) -> Union[torch.Tensor, np.ndarray]:
+        """Lightweight loudness normalization (RMS-based, ~LUFS-equivalent for music).
+
+        - Brings RMS to ``target_rms_dbfs`` (default -16 dBFS ≈ -14 LUFS music master).
+        - Applies a simple peak limiter at ``peak_ceiling_dbfs`` (default -1 dBFS).
+        - Stays on the input type (torch or numpy).
+
+        For true ITU-R BS.1770 LUFS use ``pyloudnorm``; this is a dependency-free approximation
+        suitable for ready-to-publish output without DAW post-processing.
+        """
+        is_tensor = isinstance(audio, torch.Tensor)
+        x = audio.detach().cpu().float() if is_tensor else torch.from_numpy(np.asarray(audio)).float()
+        if x.numel() == 0:
+            return audio
+        rms = torch.sqrt(torch.mean(x ** 2)).clamp(min=1e-9)
+        target_rms = 10.0 ** (target_rms_dbfs / 20.0)
+        x = x * (target_rms / rms)
+        peak_ceiling = 10.0 ** (peak_ceiling_dbfs / 20.0)
+        cur_peak = x.abs().max().clamp(min=1e-9)
+        if cur_peak > peak_ceiling:
+            x = x * (peak_ceiling / cur_peak)
+        if is_tensor:
+            return x.to(audio.device).to(audio.dtype)
+        return x.numpy()
+
     
     def save_audio(
         self,
@@ -40,6 +71,9 @@ class AudioSaver:
         sample_rate: int = 48000,
         format: Optional[str] = None,
         channels_first: bool = True,
+        normalize_loudness: bool = False,
+        target_rms_dbfs: float = -16.0,
+        peak_ceiling_dbfs: float = -1.0,
     ) -> str:
         """
         Save audio data to file
@@ -84,6 +118,21 @@ class AudioSaver:
         
         # Ensure memory is contiguous
         audio_tensor = audio_tensor.contiguous()
+
+        # Optional loudness normalization for ready-to-publish output
+        if normalize_loudness:
+            try:
+                audio_tensor = self.normalize_loudness(
+                    audio_tensor,
+                    target_rms_dbfs=target_rms_dbfs,
+                    peak_ceiling_dbfs=peak_ceiling_dbfs,
+                )
+                audio_tensor = audio_tensor.contiguous()
+                logger.debug(
+                    f"[AudioSaver] Normalized loudness to {target_rms_dbfs} dBFS RMS, peak ≤ {peak_ceiling_dbfs} dBFS"
+                )
+            except Exception as e:
+                logger.warning(f"[AudioSaver] Loudness normalization failed, saving raw: {e}")
         
         # Select backend and save
         try:
@@ -301,27 +350,69 @@ def generate_uuid_from_audio_data(
 _default_saver = AudioSaver(default_format="flac")
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
 def save_audio(
     audio_data: Union[torch.Tensor, np.ndarray],
     output_path: Union[str, Path],
     sample_rate: int = 48000,
     format: Optional[str] = None,
     channels_first: bool = True,
+    normalize_loudness: Optional[bool] = None,
+    target_rms_dbfs: Optional[float] = None,
+    peak_ceiling_dbfs: Optional[float] = None,
 ) -> str:
     """
-    Convenience function: save audio (using default configuration)
-    
+    Convenience function: save audio (using default configuration).
+
+    Loudness normalization can be enabled per-call via ``normalize_loudness``,
+    or globally via the ``ACESTEP_LOUDNORM`` environment variable. Targets
+    default to ``ACESTEP_LOUDNORM_DBFS`` (RMS, default -16) and
+    ``ACESTEP_LOUDNORM_PEAK`` (peak ceiling, default -1).
+
     Args:
         audio_data: Audio data
         output_path: Output path
         sample_rate: Sample rate
         format: Format (default flac)
         channels_first: Tensor format flag
-    
+        normalize_loudness: Force enable/disable; ``None`` falls back to env.
+        target_rms_dbfs: Override RMS target.
+        peak_ceiling_dbfs: Override peak ceiling.
+
     Returns:
         Saved file path
     """
+    if normalize_loudness is None:
+        normalize_loudness = _env_flag("ACESTEP_LOUDNORM", default=False)
+    if target_rms_dbfs is None:
+        target_rms_dbfs = _env_float("ACESTEP_LOUDNORM_DBFS", -16.0)
+    if peak_ceiling_dbfs is None:
+        peak_ceiling_dbfs = _env_float("ACESTEP_LOUDNORM_PEAK", -1.0)
+
     return _default_saver.save_audio(
-        audio_data, output_path, sample_rate, format, channels_first
+        audio_data,
+        output_path,
+        sample_rate,
+        format,
+        channels_first,
+        normalize_loudness=normalize_loudness,
+        target_rms_dbfs=target_rms_dbfs,
+        peak_ceiling_dbfs=peak_ceiling_dbfs,
     )
 
